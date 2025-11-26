@@ -1,0 +1,31 @@
+[project]
+name = "cooliomusic"
+version = "0.1.0"
+description = "Automated music generation for YouTube using ElevenLabs"
+requires-python = ">=3.11"
+dependencies = [
+    "elevenlabs>=1.50.0",
+    "openai>=1.0.0",
+    "typer>=0.12.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+coolio = "coolio.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/coolio"]
+
+[tool.pyright]
+typeCheckingMode = "basic"
+pythonVersion = "3.11"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false

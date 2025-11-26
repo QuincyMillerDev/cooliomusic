@@ -1,0 +1,8 @@
+---
+alwaysApply: true
+---
+
+1. Prioritize maintainable, readable code over silencing lint/type errors.
+2. Never introduce hacky workarounds (e.g., dummy attributes, broad getattr fallbacks, suppressing type checks) solely to satisfy tooling.
+3. If a linter/type checker produces a false positive, prefer documenting the limitation or adding a focused ignore comment rather than changing runtime behavior.
+4. When confronted with a lint violation that requires deeper design work, surface the issue to the user instead of applying quick fixes that degrade code quality.
