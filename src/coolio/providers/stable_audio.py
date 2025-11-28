@@ -6,8 +6,8 @@ from typing import Any
 
 import httpx
 
-from coolio.core.config import get_settings
-from coolio.music.providers.base import (
+from coolio.config import get_settings
+from coolio.providers.base import (
     GeneratedTrack,
     MusicProvider,
     ProviderCapabilities,
@@ -111,20 +111,21 @@ class StableAudioProvider:
                 files={"none": ("", "")},  # Force multipart encoding
             )
 
-        # Handle errors
-        if response.status_code != 200:
-            error_detail = response.text
-            raise RuntimeError(
-                f"Stable Audio API error ({response.status_code}): {error_detail}\n"
-                f"URL: {self.API_URL}"
-            )
+            # Handle errors and read response inside context manager
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"Stable Audio API error ({response.status_code}): {response.text}\n"
+                    f"URL: {self.API_URL}"
+                )
+
+            audio_content = response.content
 
         # Save audio file
         audio_path = output_dir / f"{filename_base}.mp3"
         metadata_path = output_dir / f"{filename_base}.json"
 
         with open(audio_path, "wb") as f:
-            f.write(response.content)
+            f.write(audio_content)
 
         # Save metadata
         metadata: dict[str, Any] = {

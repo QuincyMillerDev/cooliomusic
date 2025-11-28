@@ -6,8 +6,8 @@ from typing import Any, Protocol, cast, runtime_checkable
 
 from elevenlabs.client import ElevenLabs
 
-from coolio.core.config import get_settings
-from coolio.music.providers.base import (
+from coolio.config import get_settings
+from coolio.providers.base import (
     GeneratedTrack,
     MusicProvider,
     ProviderCapabilities,

@@ -1,8 +1,8 @@
-"""Curator agent for planning sessions with library reuse.
+"""Session planner for creating tracklists with library reuse.
 
 Acts as a DJ that can select existing tracks from the library or request
-new generation to fill gaps. This is the first agent in the pipeline -
-it always runs before the Generator agent.
+new generation to fill gaps. This runs before the Generator to produce
+a SessionPlan.
 """
 
 import json
@@ -10,16 +10,11 @@ import logging
 
 from openai import OpenAI
 
-from coolio.core.config import get_settings
+from coolio.config import get_settings
 from coolio.library.metadata import TrackMetadata
 from coolio.models import SessionPlan, TrackSlot
 
 logger = logging.getLogger(__name__)
-
-
-# Keep old names as aliases for backwards compatibility during migration
-CurationSlot = TrackSlot
-CurationPlan = SessionPlan
 
 
 SYSTEM_PROMPT = """CONTEXT:
@@ -46,7 +41,7 @@ YOUR TASK:
 DECISION LOGIC (The "Fit" Score):
 - REUSE a track if:
   - Genre matches EXACTLY.
-  - BPM is within ±3 of target.
+  - BPM is within ±10 of target.
   - Energy fits the current slot's role (e.g., low energy for intro, high for peak).
   - Vibe/Title matches the concept.
 - GENERATE a new track if:
@@ -147,7 +142,7 @@ CONSTRAINTS:
 """
 
 
-def create_agent_client() -> OpenAI:
+def _create_client() -> OpenAI:
     """Create an OpenAI client configured for OpenRouter."""
     s = get_settings()
     return OpenAI(
@@ -156,7 +151,7 @@ def create_agent_client() -> OpenAI:
     )
 
 
-def generate_curation_plan(
+def generate_session_plan(
     concept: str,
     genre: str,
     candidates: list[TrackMetadata],
@@ -166,7 +161,7 @@ def generate_curation_plan(
 ) -> SessionPlan:
     """Generate a session plan mixing library tracks and new generation.
 
-    This is the main entry point for the Curator agent. It analyzes the
+    This is the main entry point for session planning. It analyzes the
     user's concept, reviews available library tracks, and creates a plan
     that optimally mixes reuse with new generation.
 
@@ -181,7 +176,7 @@ def generate_curation_plan(
     Returns:
         SessionPlan containing the complete tracklist with sources.
     """
-    client = create_agent_client()
+    client = _create_client()
     s = get_settings()
     model = model or s.openrouter_model
 
@@ -214,7 +209,7 @@ Create a curation plan. Prioritize reusing library tracks that fit well. For eac
 'source': 'library' or 'generate'. Use stable_audio for most new generation.
 """
 
-    logger.info(f"Curator Agent planning '{concept}' with {len(candidates)} candidates...")
+    logger.info(f"Planning session '{concept}' with {len(candidates)} candidates...")
 
     try:
         response = client.chat.completions.create(
@@ -231,7 +226,7 @@ Create a curation plan. Prioritize reusing library tracks that fit well. For eac
 
     content = response.choices[0].message.content
     if not content:
-        raise ValueError("Empty response from Curator Agent")
+        raise ValueError("Empty response from planner")
 
     # Clean markdown fences if present
     content = content.strip()
@@ -247,7 +242,7 @@ Create a curation plan. Prioritize reusing library tracks that fit well. For eac
         slots_data = data.get("slots", [])
         bpm_range = data.get("bpm_range", [120, 130])
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON from Curator: {e}")
+        raise ValueError(f"Invalid JSON from planner: {e}")
 
     slots = []
     for s_data in slots_data:
@@ -273,3 +268,4 @@ Create a curation plan. Prioritize reusing library tracks that fit well. For eac
         slots=slots,
         model_used=model,
     )
+

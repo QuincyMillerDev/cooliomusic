@@ -5,11 +5,11 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 
-from coolio.core.config import get_settings
-from coolio.agents.curator import generate_curation_plan
+from coolio.config import get_settings
+from coolio.djcoolio import generate_session_plan
 from coolio.library.query import LibraryQuery
 from coolio.models import SessionPlan
-from coolio.music.generator import MusicGenerator
+from coolio.generator import MusicGenerator
 
 app = typer.Typer(
     name="coolio",
@@ -163,7 +163,7 @@ def generate(
     console.print()
 
     try:
-        plan = generate_curation_plan(
+        plan = generate_session_plan(
             concept=concept,
             genre=genre,
             candidates=candidates,
@@ -291,7 +291,7 @@ def plan(
     console.print()
 
     try:
-        plan = generate_curation_plan(
+        plan = generate_session_plan(
             concept=concept,
             genre=genre,
             candidates=candidates,
@@ -532,42 +532,6 @@ def library_list(
     console.print(table)
     console.print()
     console.print(f"[green]Found {len(audio_files)} tracks[/green]")
-
-
-# Keep curate as an alias for backwards compatibility
-@app.command(hidden=True)
-def curate(
-    concept: str = typer.Argument(...),
-    genre: str = typer.Option(..., "--genre", "-g"),
-    tracks: int = typer.Option(15, "--tracks", "-t"),
-    duration: int = typer.Option(60, "--duration", "-d"),
-    exclude_days: int = typer.Option(7, "--exclude-days"),
-    budget: float = typer.Option(5.00, "--budget", "-b"),
-    model: str = typer.Option(None, "--model", "-m"),
-    skip_audio: bool = typer.Option(False, "--skip-audio"),
-    skip_upload: bool = typer.Option(False, "--skip-upload"),
-):
-    """
-    [DEPRECATED] Use 'coolio generate' instead.
-
-    This command is kept for backwards compatibility.
-    """
-    console.print("[yellow]Note: 'curate' is deprecated. Use 'generate' instead.[/yellow]")
-    console.print()
-
-    # Forward to generate
-    generate(
-        concept=concept,
-        genre=genre,
-        tracks=tracks,
-        duration=duration,
-        budget=budget,
-        model=model,
-        exclude_days=exclude_days,
-        no_library=False,
-        skip_audio=skip_audio,
-        skip_upload=skip_upload,
-    )
 
 
 if __name__ == "__main__":

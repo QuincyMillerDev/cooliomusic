@@ -10,13 +10,13 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
-from coolio.core.config import get_settings
+from coolio.config import get_settings
 from coolio.library.metadata import TrackMetadata
 from coolio.library.storage import R2Storage
 from coolio.models import SessionPlan, TrackSlot
-from coolio.music.providers.base import GeneratedTrack, MusicProvider
-from coolio.music.providers.elevenlabs import ElevenLabsProvider
-from coolio.music.providers.stable_audio import StableAudioProvider
+from coolio.providers.base import GeneratedTrack, MusicProvider
+from coolio.providers.elevenlabs import ElevenLabsProvider
+from coolio.providers.stable_audio import StableAudioProvider
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,6 @@ class MusicGenerator:
 
         # Route to the appropriate provider
         if provider_name == "elevenlabs":
-            from coolio.music.providers.elevenlabs import ElevenLabsProvider
             elevenlabs_provider = provider
             assert isinstance(elevenlabs_provider, ElevenLabsProvider)
             return elevenlabs_provider.generate(
@@ -263,11 +262,10 @@ class MusicGenerator:
         """Execute a session plan (the unified entry point).
 
         This method handles both library reuse and new generation based on
-        each slot's source field. It replaces the old generate_session()
-        and execute_curation_plan() methods.
+        each slot's source field.
 
         Args:
-            plan: Complete session plan from Curator agent.
+            plan: Complete session plan from planner.
 
         Returns:
             GenerationSession with all processed tracks.
@@ -368,24 +366,3 @@ class MusicGenerator:
             generated_count=generated_count,
         )
 
-    # Backwards compatibility aliases
-    def generate_session(self, session_plan: SessionPlan, genre: str = "unknown") -> GenerationSession:
-        """Backwards-compatible alias for execute_plan.
-
-        Deprecated: Use execute_plan() instead.
-        """
-        # Override genre if provided (old API allowed this)
-        if genre != "unknown":
-            # Create a modified plan with the specified genre
-            from dataclasses import replace
-            session_plan = replace(session_plan, genre=genre)
-        return self.execute_plan(session_plan)
-
-    def execute_curation_plan(self, plan: SessionPlan, genre: str) -> GenerationSession:
-        """Backwards-compatible alias for execute_plan.
-
-        Deprecated: Use execute_plan() instead.
-        """
-        from dataclasses import replace
-        plan = replace(plan, genre=genre)
-        return self.execute_plan(plan)

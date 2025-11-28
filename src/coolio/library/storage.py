@@ -7,7 +7,7 @@ from pathlib import Path
 import boto3
 from botocore.exceptions import ClientError
 
-from coolio.core.config import get_settings
+from coolio.config import get_settings
 
 logger = logging.getLogger(__name__)
 
