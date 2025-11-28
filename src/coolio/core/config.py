@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     # ElevenLabs
     elevenlabs_api_key: str = Field(..., alias="ELEVENLABS_API_KEY")
 
+    # Stability AI (Stable Audio)
+    stability_api_key: str = Field(..., alias="STABILITY_API_KEY")
+    stable_audio_model: str = Field(
+        default="stable-audio-2.5",
+        alias="STABLE_AUDIO_MODEL",
+    )
+
     # OpenRouter (OpenAI-compatible API for multi-model support)
     openrouter_api_key: str = Field(..., alias="OPENROUTER_API_KEY")
     openrouter_model: str = Field(
@@ -24,14 +31,17 @@ class Settings(BaseSettings):
         alias="OPENROUTER_BASE_URL",
     )
 
+    # Cloudflare R2 Storage
+    r2_access_key_id: str = Field(..., alias="R2_ACCESS_KEY_ID")
+    r2_secret_access_key: str = Field(..., alias="R2_SECRET_ACCESS_KEY")
+    r2_bucket_name: str = Field(default="cooliomusicstorage", alias="R2_BUCKET_NAME")
+    r2_endpoint_url: str = Field(
+        default="https://ccbe407ceb8cc78fc1ec28cbb02894b0.r2.cloudflarestorage.com",
+        alias="R2_ENDPOINT_URL",
+    )
+
     # Output settings
     output_dir: Path = Field(default=Path("output/audio"))
-
-    # Generation defaults
-    default_track_count: int = Field(default=5)
-    default_track_duration_ms: int = Field(default=180000)  # 3 minutes
-    max_track_duration_ms: int = Field(default=300000)  # 5 minutes (ElevenLabs limit)
-    min_track_duration_ms: int = Field(default=10000)  # 10 seconds (ElevenLabs limit)
 
     model_config = {
         "env_file": ".env",
