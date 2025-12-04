@@ -40,27 +40,30 @@ YOUR TASK:
 
 DECISION LOGIC (The "Fit" Score):
 - REUSE a track if:
-  - Genre matches EXACTLY.
+  - Genre matches loosely.
   - BPM is within ±10 of target.
   - Energy fits the current slot's role (e.g., low energy for intro, high for peak).
   - Vibe/Title matches the concept.
 - GENERATE a new track if:
   - No existing track fits the slot perfectly.
   - You need a specific bridge or transition not present in the library.
+- Prioritize reusing library tracks over generating new ones to save costs.
 
 TRACK NAMING (for new generation):
-Each track MUST have a unique, evocative title - like a real song name you'd see on a tracklist.
-Good titles are abstract, poetic, or emotionally resonant. Think of names like:
+Each track MUST have a unique, evocative title - like a real song name on an underground electronic tracklist.
+
+Good titles feel personal, abstract, or poetic. Examples for inspiration (don't copy these):
 - "These Things Will Come To Be"
 - "Can We Still Be Friends?"
 - "Porco Rosso"
-- "All About U"
 - "Sufriendo"
+- "4am"
+- "homesoon."
+- "All About U"
 
-Bad titles are generic or too literal:
-- "Deep Focus Beat 1" (too generic)
-- "Intro Track" (describes role, not a name)
-- "Neon Drift" (overused AI aesthetic)
+Avoid overused AI aesthetics like "Neon X", "Cosmic Y", "Digital Z", "Midnight Dreams".
+Don't directly reference the concept (e.g., no "hawkins", "demogorgon" for a Stranger Things concept).
+Don't make all titles follow the same pattern - mix it up naturally.
 
 PROMPT CRAFTING (for new generation):
 Each track's prompt must layer multiple descriptors together. Combine:
@@ -77,6 +80,7 @@ EXAMPLE PROMPTS:
 
 OUTPUT SCHEMA (JSON ONLY):
 {
+  "genre": "<inferred primary genre from concept, e.g. 'techno', 'house', 'lofi', 'ambient'>",
   "bpm_range": [124, 130],
   "slots": [
     {
@@ -153,7 +157,6 @@ def _create_client() -> OpenAI:
 
 def generate_session_plan(
     concept: str,
-    genre: str,
     candidates: list[TrackMetadata],
     track_count: int = 15,
     target_duration_minutes: int = 60,
@@ -165,10 +168,11 @@ def generate_session_plan(
     user's concept, reviews available library tracks, and creates a plan
     that optimally mixes reuse with new generation.
 
+    The LLM infers the appropriate genre from the concept.
+
     Args:
-        concept: User's video concept/vibe.
-        genre: Target genre for the session.
-        candidates: List of available tracks from the library (pre-filtered).
+        concept: User's video concept/vibe (genre, mood, purpose).
+        candidates: List of available tracks from the library.
         track_count: Target number of tracks (flexible based on library availability).
         target_duration_minutes: Target total duration (primary constraint).
         model: LLM model to use.
@@ -198,15 +202,26 @@ def generate_session_plan(
     else:
         candidates_json = "[]  # Library is empty - generate all tracks"
 
+    # Calculate how many 3-min stable_audio tracks needed
+    tracks_needed_for_duration = target_duration_minutes // 3
+
     user_prompt = f"""CONCEPT: "{concept}"
-GENRE: {genre}
-TARGET DURATION: ~{target_duration_minutes} minutes (aim for {track_count} tracks, but flexible based on library)
+TARGET DURATION: {target_duration_minutes} minutes (PRIMARY CONSTRAINT)
+
+PROVIDER MIX:
+- stable_audio: $0.20/track (max 190s) - Use for ~80% of new tracks
+- elevenlabs: ~$1.20/track (up to 300s) - Use for 2-3 tracks for variety
+- library tracks: FREE - Prioritize reuse
+
+Budget target: ~{tracks_needed_for_duration} tracks × 3 min = {target_duration_minutes} min
+Aim for ~${(tracks_needed_for_duration - 5) * 0.20 + 2 * 1.20:.2f} total (mostly stable_audio + 2 elevenlabs)
 
 CANDIDATE LIBRARY TRACKS (FREE to reuse):
 {candidates_json}
 
-Create a curation plan. Prioritize reusing library tracks that fit well. For each slot, specify 
-'source': 'library' or 'generate'. Use stable_audio for most new generation.
+Create a curation plan. The total duration MUST be close to {target_duration_minutes} minutes.
+Use a mix: mostly stable_audio, but include 2-3 elevenlabs tracks for sonic variety (different sound character).
+Prioritize reusing library tracks. Remember to VARY the track title styles (see naming rules above).
 """
 
     logger.info(f"Planning session '{concept}' with {len(candidates)} candidates...")
@@ -239,6 +254,7 @@ Create a curation plan. Prioritize reusing library tracks that fit well. For eac
 
     try:
         data = json.loads(content)
+        genre = data.get("genre", "electronic")
         slots_data = data.get("slots", [])
         bpm_range = data.get("bpm_range", [120, 130])
     except json.JSONDecodeError as e:

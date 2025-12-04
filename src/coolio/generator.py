@@ -6,9 +6,11 @@ library track reuse and new generation through the provider system.
 
 import json
 import logging
+import time
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+from typing import Callable, TypeVar
 
 from coolio.config import get_settings
 from coolio.library.metadata import TrackMetadata
@@ -19,6 +21,13 @@ from coolio.providers.elevenlabs import ElevenLabsProvider
 from coolio.providers.stable_audio import StableAudioProvider
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+# ElevenLabs advertises 5-minute generations, but anything well past 3 minutes
+# currently dies with a RemoteProtocolError (server disconnect) which burns credits.
+# To keep automation stable, route longer durations to Stable Audio instead.
+ELEVENLABS_SAFE_MAX_DURATION_MS = 180_000
 
 
 class GenerationSession:
@@ -53,14 +62,20 @@ class MusicGenerator:
     This is the single entry point for executing SessionPlans. It handles:
     - Downloading and reusing library tracks
     - Generating new tracks via providers
-    - Uploading new tracks to R2
+    - Uploading new tracks and sessions to R2
+    - Auto-cleanup of local temp files after R2 upload
     - Tracking costs and session metadata
     """
 
-    def __init__(self, upload_to_r2: bool = True) -> None:
+    def __init__(
+        self,
+        upload_to_r2: bool = True,
+        auto_cleanup: bool = True,
+    ) -> None:
         s = get_settings()
         self.output_dir = s.output_dir
         self._upload_to_r2 = upload_to_r2
+        self._auto_cleanup = auto_cleanup
         self._r2: R2Storage | None = None
 
         # Initialize provider registry
@@ -74,6 +89,49 @@ class MusicGenerator:
         if self._r2 is None:
             self._r2 = R2Storage()
         return self._r2
+
+    def _with_retry(
+        self,
+        fn: Callable[[], T],
+        max_retries: int = 3,
+        base_delay: float = 2.0,
+        operation: str = "operation",
+    ) -> T:
+        """Execute a function with exponential backoff retry.
+
+        Args:
+            fn: Function to execute.
+            max_retries: Maximum number of attempts.
+            base_delay: Base delay in seconds (doubles each retry).
+            operation: Description for logging.
+
+        Returns:
+            Result of the function.
+
+        Raises:
+            Exception: The last exception if all retries fail.
+        """
+        last_exception: Exception | None = None
+
+        for attempt in range(max_retries):
+            try:
+                return fn()
+            except Exception as e:
+                last_exception = e
+                if attempt == max_retries - 1:
+                    logger.error(f"{operation} failed after {max_retries} attempts: {e}")
+                    raise
+
+                wait_time = base_delay * (2 ** attempt)
+                logger.warning(
+                    f"{operation} attempt {attempt + 1}/{max_retries} failed: {e}. "
+                    f"Retrying in {wait_time:.1f}s..."
+                )
+                print(f"  Retry {attempt + 1}/{max_retries} in {wait_time:.0f}s...")
+                time.sleep(wait_time)
+
+        # Should never reach here, but satisfy type checker
+        raise last_exception or RuntimeError("Unexpected retry failure")
 
     def _ensure_session_dir(self, session_id: str) -> Path:
         """Create and return the session output directory."""
@@ -95,6 +153,8 @@ class MusicGenerator:
     ) -> GeneratedTrack:
         """Generate a single track using the provider specified in the slot.
 
+        Uses automatic retry with exponential backoff for transient failures.
+
         Args:
             slot: The track slot with generation parameters.
             session_dir: Directory to save output.
@@ -103,10 +163,23 @@ class MusicGenerator:
             GeneratedTrack with file paths and metadata.
         """
         provider_name = slot.provider or "stable_audio"
+
+        if (
+            provider_name == "elevenlabs"
+            and slot.duration_ms > ELEVENLABS_SAFE_MAX_DURATION_MS
+        ):
+            print(
+                "  ElevenLabs unreliable beyond "
+                f"{ELEVENLABS_SAFE_MAX_DURATION_MS/1000:.0f}s; using Stable Audio instead."
+            )
+            provider_name = "stable_audio"
+            slot.provider = "stable_audio"
+
         provider = self.get_provider(provider_name)
         filename_base = f"track_{slot.order:02d}_{slot.role}"
 
-        # Route to the appropriate provider
+        # ElevenLabs: no retry (burns credits on each attempt)
+        # Stable Audio: retry OK (flat rate per track)
         if provider_name == "elevenlabs":
             elevenlabs_provider = provider
             assert isinstance(elevenlabs_provider, ElevenLabsProvider)
@@ -123,16 +196,25 @@ class MusicGenerator:
                 use_composition_plan=True,
             )
         else:
-            return provider.generate(
-                prompt=slot.prompt or f"{slot.role} track",
-                duration_ms=slot.duration_ms,
-                output_dir=session_dir,
-                filename_base=filename_base,
-                order=slot.order,
-                title=slot.title or f"Track {slot.order}",
-                role=slot.role,
-                bpm=slot.bpm_target,
-                energy=slot.energy,
+            # Stable Audio can retry safely
+            def do_generate() -> GeneratedTrack:
+                return provider.generate(
+                    prompt=slot.prompt or f"{slot.role} track",
+                    duration_ms=slot.duration_ms,
+                    output_dir=session_dir,
+                    filename_base=filename_base,
+                    order=slot.order,
+                    title=slot.title or f"Track {slot.order}",
+                    role=slot.role,
+                    bpm=slot.bpm_target,
+                    energy=slot.energy,
+                )
+
+            return self._with_retry(
+                do_generate,
+                max_retries=3,
+                base_delay=2.0,
+                operation=f"Generate track {slot.order} via {provider_name}",
             )
 
     def _upload_track_to_r2(
@@ -324,7 +406,20 @@ class MusicGenerator:
                 print(f"  ERROR processing slot {slot.order}: {e}")
                 logger.exception("Slot processing error")
 
-        # Save session metadata
+        # Build session metadata with track references (not copies)
+        track_references = []
+        for meta in uploaded_metadata:
+            track_references.append({
+                "track_id": meta.track_id,
+                "title": meta.title,
+                "role": meta.role,
+                "genre": meta.genre,
+                "bpm": meta.bpm,
+                "duration_ms": meta.duration_ms,
+                "energy": meta.energy,
+                "provider": meta.provider,
+            })
+
         session_metadata = {
             "session_id": session_id,
             "concept": plan.concept,
@@ -341,18 +436,39 @@ class MusicGenerator:
             "actual_cost": round(actual_cost, 2),
             "created_at": datetime.now().isoformat(),
             "slots": [asdict(s) for s in plan.slots],
-            "library_tracks": [m.track_id for m in uploaded_metadata],
+            "track_references": track_references,
         }
 
+        # Save session metadata locally first
         session_metadata_path = session_dir / "session.json"
         with open(session_metadata_path, "w") as f:
             json.dump(session_metadata, f, indent=2)
+
+        # Upload session to R2
+        session_uploaded = False
+        if self._upload_to_r2:
+            try:
+                r2 = self._get_r2()
+                r2.upload_session_metadata(session_metadata, session_id)
+                session_uploaded = True
+                print(f"  Session uploaded to R2: sessions/{session_id}/")
+            except Exception as e:
+                logger.warning(f"Failed to upload session to R2: {e}")
+                print(f"  Warning: Session R2 upload failed: {e}")
 
         print(f"\nSession complete!")
         print(f"  Reused: {reused_count}, Generated: {generated_count}")
         print(f"  Uploaded to R2: {len(uploaded_metadata)} new tracks")
         print(f"  Actual cost: ${actual_cost:.2f}")
-        print(f"  Session metadata: {session_metadata_path}")
+
+        # Auto-cleanup local files if R2 upload succeeded
+        if self._auto_cleanup and session_uploaded and self._upload_to_r2:
+            if R2Storage.delete_local_session(session_dir):
+                print(f"  Local temp files cleaned up")
+            else:
+                print(f"  Session metadata: {session_metadata_path}")
+        else:
+            print(f"  Session metadata: {session_metadata_path}")
 
         return GenerationSession(
             session_id=session_id,
@@ -365,4 +481,144 @@ class MusicGenerator:
             reused_count=reused_count,
             generated_count=generated_count,
         )
+
+    def repair_session(
+        self,
+        session_id: str,
+        slot_numbers: list[int],
+        local_dir: Path | None = None,
+    ) -> dict:
+        """Repair a session by regenerating specific failed slots.
+
+        Downloads session metadata from R2, regenerates the specified slots,
+        uploads the new tracks, and updates the session metadata.
+
+        Args:
+            session_id: Session ID to repair (e.g., "session_20231125_123456").
+            slot_numbers: List of slot order numbers to regenerate (1-indexed).
+            local_dir: Optional local directory to save tracks. If None,
+                       creates a temp directory.
+
+        Returns:
+            Dict with repair results including succeeded/failed counts.
+        """
+        r2 = self._get_r2()
+
+        # 1. Load session metadata from R2
+        print(f"\nRepairing session: {session_id}")
+        print(f"  Slots to regenerate: {slot_numbers}")
+
+        session_meta = r2.get_session_metadata(session_id)
+        if not session_meta:
+            raise ValueError(f"Session not found in R2: {session_id}")
+
+        genre = session_meta.get("genre", "electronic")
+        concept = session_meta.get("concept", "")
+        slots_data = session_meta.get("slots", [])
+
+        if not slots_data:
+            raise ValueError(f"Session has no slots data: {session_id}")
+
+        # 2. Find the slots to repair
+        slots_to_repair: list[TrackSlot] = []
+        for slot_data in slots_data:
+            order = slot_data.get("order", 0)
+            if order in slot_numbers:
+                slot = TrackSlot(
+                    order=order,
+                    source="generate",  # Force regeneration
+                    role=slot_data.get("role", "body"),
+                    bpm_target=slot_data.get("bpm_target", 120),
+                    energy=slot_data.get("energy", 5),
+                    duration_ms=slot_data.get("duration_ms", 180000),
+                    prompt=slot_data.get("prompt"),
+                    provider=slot_data.get("provider", "stable_audio"),
+                    title=slot_data.get("title"),
+                )
+                slots_to_repair.append(slot)
+
+        if not slots_to_repair:
+            raise ValueError(f"None of the specified slots found: {slot_numbers}")
+
+        print(f"  Found {len(slots_to_repair)} slots to repair")
+
+        # 3. Setup local directory
+        if local_dir is None:
+            local_dir = self.output_dir / f"{session_id}_repair"
+        local_dir.mkdir(parents=True, exist_ok=True)
+
+        # 4. Regenerate each slot
+        results = {
+            "session_id": session_id,
+            "slots_requested": slot_numbers,
+            "succeeded": [],
+            "failed": [],
+            "new_tracks": [],
+            "cost": 0.0,
+        }
+
+        new_track_refs: list[dict] = []
+
+        for slot in slots_to_repair:
+            print(f"\nSlot {slot.order}: Regenerating '{slot.title}' via {slot.provider}...")
+
+            try:
+                track = self._generate_track(slot, local_dir)
+                print(f"  Generated: {track.audio_path.name}")
+
+                # Upload to library
+                meta = self._upload_track_to_r2(track, slot, session_id, genre)
+                if meta:
+                    new_track_refs.append({
+                        "track_id": meta.track_id,
+                        "title": meta.title,
+                        "role": meta.role,
+                        "genre": meta.genre,
+                        "bpm": meta.bpm,
+                        "duration_ms": meta.duration_ms,
+                        "energy": meta.energy,
+                        "provider": meta.provider,
+                    })
+
+                results["succeeded"].append(slot.order)
+                results["cost"] += slot.estimated_cost()
+                results["new_tracks"].append({
+                    "order": slot.order,
+                    "title": slot.title,
+                    "provider": slot.provider,
+                })
+
+            except Exception as e:
+                print(f"  FAILED: {e}")
+                logger.exception(f"Failed to repair slot {slot.order}")
+                results["failed"].append({"order": slot.order, "error": str(e)})
+
+        # 5. Update session metadata in R2
+        if results["succeeded"]:
+            existing_refs = session_meta.get("track_references", [])
+            existing_refs.extend(new_track_refs)
+            session_meta["track_references"] = existing_refs
+            session_meta["repaired_at"] = datetime.now().isoformat()
+            session_meta["repaired_slots"] = results["succeeded"]
+
+            # Update counts
+            session_meta["final_track_count"] = session_meta.get("final_track_count", 0) + len(results["succeeded"])
+            session_meta["generated_count"] = session_meta.get("generated_count", 0) + len(results["succeeded"])
+            session_meta["actual_cost"] = round(
+                session_meta.get("actual_cost", 0) + results["cost"], 2
+            )
+
+            try:
+                r2.upload_session_metadata(session_meta, session_id)
+                print(f"\n  Session metadata updated in R2")
+            except Exception as e:
+                print(f"\n  Warning: Failed to update session metadata: {e}")
+
+        # Summary
+        print(f"\nRepair complete!")
+        print(f"  Succeeded: {len(results['succeeded'])} slots")
+        print(f"  Failed: {len(results['failed'])} slots")
+        print(f"  Cost: ${results['cost']:.2f}")
+
+        return results
 

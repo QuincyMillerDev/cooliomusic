@@ -1,9 +1,11 @@
 """ElevenLabs music generation provider."""
 
 import json
+import logging
 from pathlib import Path
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any
 
+import httpx
 from elevenlabs.client import ElevenLabs
 
 from coolio.config import get_settings
@@ -13,13 +15,14 @@ from coolio.providers.base import (
     ProviderCapabilities,
 )
 
+logger = logging.getLogger(__name__)
 
-@runtime_checkable
-class DetailedComposition(Protocol):
-    """Subset of attributes returned by ElevenLabs compose_detailed."""
+# ElevenLabs API endpoint
+ELEVENLABS_MUSIC_URL = "https://api.elevenlabs.io/v1/music"
+ELEVENLABS_MODEL_ID = "music_v1"
 
-    json: dict[str, Any] | None
-    audio: bytes
+# Timeout for music generation (seconds) - generation can take several minutes
+GENERATION_TIMEOUT = 600  # 10 minutes
 
 
 class ElevenLabsProvider:
@@ -34,7 +37,9 @@ class ElevenLabsProvider:
 
     def __init__(self) -> None:
         s = get_settings()
-        self._client = ElevenLabs(api_key=s.elevenlabs_api_key)
+        self._api_key = s.elevenlabs_api_key
+        # SDK client used only for composition plan creation (fast, no streaming)
+        self._client = ElevenLabs(api_key=self._api_key)
         self._capabilities = ProviderCapabilities(
             name="elevenlabs",
             max_duration_ms=300_000,  # 5 minutes
@@ -65,6 +70,92 @@ class ElevenLabsProvider:
             prompt=prompt,
             music_length_ms=duration_ms,
         )
+
+    def _generate_audio(
+        self,
+        prompt: str,
+        duration_ms: int,
+        use_composition_plan: bool,
+    ) -> tuple[bytes, dict[str, Any] | None]:
+        """Generate music via direct ElevenLabs HTTP request.
+
+        Args:
+            prompt: Text prompt describing the music.
+            duration_ms: Target duration in milliseconds.
+            use_composition_plan: If True, generate composition plan first.
+
+        Returns:
+            Tuple of (audio_bytes, composition_plan_dict).
+
+        Raises:
+            RuntimeError: If generation fails.
+        """
+        composition_plan_dict: dict[str, Any] | None = None
+
+        if use_composition_plan:
+            print("  Creating composition plan...")
+            plan_obj = self.create_composition_plan(prompt, duration_ms)
+            composition_plan_dict = plan_obj.model_dump()
+            body: dict[str, Any] = {"composition_plan": composition_plan_dict}
+        else:
+            body = {
+                "prompt": prompt,
+                "music_length_ms": duration_ms,
+            }
+
+        body["model_id"] = ELEVENLABS_MODEL_ID
+
+        print("  Generating audio via ElevenLabs API...")
+        print(f"  Duration: {duration_ms}ms ({duration_ms/1000:.0f}s)")
+
+        headers = {
+            "xi-api-key": self._api_key,
+            "Content-Type": "application/json",
+        }
+
+        try:
+            response = httpx.post(
+                ELEVENLABS_MUSIC_URL,
+                headers=headers,
+                json=body,
+                timeout=httpx.Timeout(
+                    connect=30.0,
+                    read=GENERATION_TIMEOUT,
+                    write=30.0,
+                    pool=60.0,
+                ),
+            )
+
+            if response.status_code != 200:
+                logger.error(
+                    "ElevenLabs HTTP error: %s %s",
+                    response.status_code,
+                    response.text[:500],
+                )
+
+            response.raise_for_status()
+            return response.content, composition_plan_dict
+
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            logger.error(
+                "ElevenLabs API error %s: %s",
+                status,
+                e.response.text[:500],
+            )
+            raise RuntimeError(
+                f"ElevenLabs API error {status}: {e.response.text[:200]}"
+            ) from e
+
+        except httpx.HTTPError as e:
+            logger.error(f"ElevenLabs network error: {e}")
+            raise RuntimeError(f"ElevenLabs network error: {e}") from e
+
+        except Exception as e:  # pragma: no cover - defensive catch
+            logger.exception("Unexpected ElevenLabs error")
+            raise RuntimeError(
+                "Unexpected ElevenLabs error during music generation"
+            ) from e
 
     def generate(
         self,
@@ -102,41 +193,19 @@ class ElevenLabsProvider:
             min(duration_ms, self._capabilities.max_duration_ms),
         )
 
-        composition_plan_dict: dict[str, Any] | None = None
-        song_metadata: dict[str, Any] | None = None
-
-        # Generate music (with or without prior composition plan)
-        if use_composition_plan:
-            print("  Creating composition plan...")
-            plan_obj = self.create_composition_plan(prompt, duration_ms)
-
-            print("  Generating audio from plan...")
-            track_details_raw = self._client.music.compose_detailed(
-                composition_plan=plan_obj,
-            )
-        else:
-            print("  Generating audio from prompt...")
-            track_details_raw = self._client.music.compose_detailed(
-                prompt=prompt,
-                music_length_ms=duration_ms,
-            )
-
-        # Cast to our protocol for type safety
-        track_details = cast(DetailedComposition, track_details_raw)
-
-        # Extract metadata from response
-        if track_details.json:
-            if "composition_plan" in track_details.json:
-                composition_plan_dict = track_details.json["composition_plan"]
-            if "song_metadata" in track_details.json:
-                song_metadata = track_details.json["song_metadata"]
+        # Generate music (single request, no retry to avoid burning credits)
+        audio_bytes, composition_plan_dict = self._generate_audio(
+            prompt=prompt,
+            duration_ms=duration_ms,
+            use_composition_plan=use_composition_plan,
+        )
 
         # Save audio file
         audio_path = output_dir / f"{filename_base}.mp3"
         metadata_path = output_dir / f"{filename_base}.json"
 
         with open(audio_path, "wb") as f:
-            f.write(track_details.audio)
+            f.write(audio_bytes)
 
         # Save metadata
         metadata = {
@@ -148,8 +217,8 @@ class ElevenLabsProvider:
             "bpm": bpm,
             "energy": energy,
             "provider": "elevenlabs",
+            "model": ELEVENLABS_MODEL_ID,
             "composition_plan": composition_plan_dict,
-            "song_metadata": song_metadata,
         }
         with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
@@ -168,7 +237,7 @@ class ElevenLabsProvider:
             bpm=bpm,
             energy=energy,
             composition_plan=composition_plan_dict,
-            song_metadata=song_metadata,
+            song_metadata=None,
         )
 
 

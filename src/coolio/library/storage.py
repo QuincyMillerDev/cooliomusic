@@ -2,6 +2,7 @@
 
 import json
 import logging
+import shutil
 from pathlib import Path
 
 import boto3
@@ -152,4 +153,230 @@ class R2Storage:
             if e.response["Error"]["Code"] == "404":
                 return False
             raise
+
+    def upload_image(self, local_path: Path, session_id: str) -> str:
+        """Upload a session thumbnail image to R2.
+
+        Args:
+            local_path: Path to the local image file (PNG).
+            session_id: Session identifier for organizing storage.
+
+        Returns:
+            The R2 key on success (sessions/{session_id}/thumbnail.png).
+
+        Raises:
+            ClientError: If upload fails.
+        """
+        r2_key = f"sessions/{session_id}/thumbnail.png"
+
+        # Determine content type from extension
+        suffix = local_path.suffix.lower()
+        content_type = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+        }.get(suffix, "application/octet-stream")
+
+        try:
+            with open(local_path, "rb") as f:
+                self._client.put_object(
+                    Bucket=self._bucket,
+                    Key=r2_key,
+                    Body=f,
+                    ContentType=content_type,
+                )
+            logger.info(f"Uploaded {local_path.name} -> r2://{self._bucket}/{r2_key}")
+            return r2_key
+        except ClientError as e:
+            logger.error(f"Failed to upload image {local_path}: {e}")
+            raise
+
+    # -------------------------------------------------------------------------
+    # Session Storage Methods
+    # -------------------------------------------------------------------------
+
+    def upload_session_metadata(self, session_data: dict, session_id: str) -> str:
+        """Upload session metadata to R2.
+
+        Args:
+            session_data: Session metadata dictionary.
+            session_id: Session identifier.
+
+        Returns:
+            The R2 key on success (sessions/{session_id}/session.json).
+        """
+        r2_key = f"sessions/{session_id}/session.json"
+        return self.upload_json(session_data, r2_key)
+
+    def upload_final_mix(
+        self,
+        mix_path: Path,
+        tracklist_path: Path | None,
+        session_id: str,
+    ) -> dict[str, str]:
+        """Upload final mix audio and tracklist to R2.
+
+        Args:
+            mix_path: Path to the final_mix.mp3 file.
+            tracklist_path: Optional path to tracklist.txt.
+            session_id: Session identifier.
+
+        Returns:
+            Dict with 'mix_key' and optionally 'tracklist_key'.
+        """
+        result: dict[str, str] = {}
+
+        # Upload the mix audio
+        mix_key = f"sessions/{session_id}/audio/final_mix.mp3"
+        try:
+            with open(mix_path, "rb") as f:
+                self._client.put_object(
+                    Bucket=self._bucket,
+                    Key=mix_key,
+                    Body=f,
+                    ContentType="audio/mpeg",
+                )
+            logger.info(f"Uploaded final mix -> r2://{self._bucket}/{mix_key}")
+            result["mix_key"] = mix_key
+        except ClientError as e:
+            logger.error(f"Failed to upload final mix: {e}")
+            raise
+
+        # Upload tracklist if provided
+        if tracklist_path and tracklist_path.exists():
+            tracklist_key = f"sessions/{session_id}/audio/tracklist.txt"
+            try:
+                with open(tracklist_path, "rb") as f:
+                    self._client.put_object(
+                        Bucket=self._bucket,
+                        Key=tracklist_key,
+                        Body=f,
+                        ContentType="text/plain",
+                    )
+                logger.info(f"Uploaded tracklist -> r2://{self._bucket}/{tracklist_key}")
+                result["tracklist_key"] = tracklist_key
+            except ClientError as e:
+                logger.warning(f"Failed to upload tracklist: {e}")
+
+        return result
+
+    def download_session_tracks(
+        self,
+        track_ids: list[str],
+        genre: str,
+        dest_dir: Path,
+    ) -> list[Path]:
+        """Download library tracks to a local directory.
+
+        Args:
+            track_ids: List of track IDs to download.
+            genre: Genre folder in library.
+            dest_dir: Local destination directory.
+
+        Returns:
+            List of downloaded file paths.
+        """
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        downloaded: list[Path] = []
+
+        for track_id in track_ids:
+            r2_key = f"library/tracks/{genre}/{track_id}.mp3"
+            local_path = dest_dir / f"{track_id}.mp3"
+
+            try:
+                self.download_file(r2_key, local_path)
+                downloaded.append(local_path)
+            except ClientError as e:
+                logger.error(f"Failed to download track {track_id}: {e}")
+
+        return downloaded
+
+    def list_sessions(self, max_keys: int = 100) -> list[str]:
+        """List all session IDs in R2.
+
+        Returns:
+            List of session IDs.
+        """
+        prefix = "sessions/"
+        objects = self.list_objects(prefix=prefix, max_keys=max_keys)
+
+        # Extract unique session IDs from keys like "sessions/session_XXX/..."
+        session_ids: set[str] = set()
+        for obj in objects:
+            key = obj["Key"]
+            parts = key.split("/")
+            if len(parts) >= 2:
+                session_ids.add(parts[1])
+
+        return sorted(session_ids)
+
+    def get_session_metadata(self, session_id: str) -> dict | None:
+        """Get session metadata from R2.
+
+        Args:
+            session_id: Session identifier.
+
+        Returns:
+            Session metadata dict, or None if not found.
+        """
+        r2_key = f"sessions/{session_id}/session.json"
+        try:
+            return self.read_json(r2_key)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                return None
+            raise
+
+    def upload_video(
+        self,
+        video_path: Path,
+        session_id: str,
+    ) -> str:
+        """Upload final video to R2.
+
+        Args:
+            video_path: Path to the final video file (MP4).
+            session_id: Session identifier.
+
+        Returns:
+            The R2 key on success (sessions/{session_id}/video/final_video.mp4).
+
+        Raises:
+            ClientError: If upload fails.
+        """
+        r2_key = f"sessions/{session_id}/video/final_video.mp4"
+
+        try:
+            with open(video_path, "rb") as f:
+                self._client.put_object(
+                    Bucket=self._bucket,
+                    Key=r2_key,
+                    Body=f,
+                    ContentType="video/mp4",
+                )
+            logger.info(f"Uploaded video -> r2://{self._bucket}/{r2_key}")
+            return r2_key
+        except ClientError as e:
+            logger.error(f"Failed to upload video: {e}")
+            raise
+
+    @staticmethod
+    def delete_local_session(session_dir: Path) -> bool:
+        """Delete a local session directory after successful R2 upload.
+
+        Args:
+            session_dir: Path to the session directory.
+
+        Returns:
+            True if deleted successfully, False otherwise.
+        """
+        try:
+            if session_dir.exists() and session_dir.is_dir():
+                shutil.rmtree(session_dir)
+                logger.info(f"Deleted local session: {session_dir}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Failed to delete local session {session_dir}: {e}")
+            return False
 

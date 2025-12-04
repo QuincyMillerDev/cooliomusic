@@ -31,6 +31,9 @@ class Settings(BaseSettings):
         alias="OPENROUTER_BASE_URL",
     )
 
+    # Fal.ai (Flux image generation)
+    fal_api_key: str = Field(..., alias="FAL_KEY")
+
     # Cloudflare R2 Storage
     r2_access_key_id: str = Field(..., alias="R2_ACCESS_KEY_ID")
     r2_secret_access_key: str = Field(..., alias="R2_SECRET_ACCESS_KEY")

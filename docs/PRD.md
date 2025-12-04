@@ -365,91 +365,111 @@ Unified the architecture to implement the two-agent sequential flow.
   - Proper metadata_path handling
 
 **CLI Commands:**
-- `coolio generate "concept" --genre X` - Full flow with library reuse
-- `coolio generate "concept" --genre X --no-library` - Generate all from scratch
-- `coolio plan "concept" --genre X` - Preview plan without generating
+- `coolio generate "concept"` - Full flow with library reuse (genre inferred by LLM)
+- `coolio generate "concept" --no-library` - Generate all from scratch
+- `coolio plan "concept"` - Preview plan without generating
+- `coolio mix <session_dir>` - Mix session tracks into final MP3
 - `coolio library verify` - Test R2 connection
-- `coolio library list [--genre X]` - List tracks in library
+- `coolio library list` - List tracks in library
 
 ---
 
-### Phase 3: Audio Composition & Mixing (Next)
+### Phase 3: Audio Composition & Mixing ✅ (Complete)
 
-Implement the post-processing pipeline that combines tracks from the R2 library into seamless mixes.
+Implemented the post-processing pipeline that combines session tracks into seamless mixes.
 
-**Goals:**
-- Pull tracks from R2 library (not just local output)
-- Execute transition instructions from agent plan
-- Crossfade between tracks (2–16 bar transitions)
-- Apply filter sweeps, volume automation
-- Normalize audio levels across full mix
-- Generate tracklist with timestamps
+**What was built:**
+- **MixComposer** (`src/coolio/mixer.py`): Combines tracks with crossfade transitions
+  - Configurable crossfade duration (default 5 seconds)
+  - Automatic silence trimming (leading/trailing)
+  - Peak normalization across full mix
+  - 320kbps MP3 export
+- **Tracklist Generator**: Creates `tracklist.txt` with timestamps
+- **CLI Integration**: `coolio mix <session_dir>` command
 
 **Tech:**
 - `pydub` for audio manipulation
-- `librosa` for BPM detection/beat alignment (optional)
-- `FFmpeg` for final encoding
-
-**Deliverables:**
-- Mix composer module
-- Transition engine (crossfade, filter, hard cut)
-- Level normalization pipeline
-- Tracklist generator with timestamps
+- `FFmpeg` for MP3 encoding
 
 ---
 
-### Phase 4: Visual & Thumbnail Generation (Implementation TBD)
+### Phase 4: Visual & Thumbnail Generation (In Progress - Experimentation)
 
-The goal is to create a visual loop that is consistent, high-quality, and loops perfectly for the duration of the mix. The exact implementation path is currently being evaluated to balance cost, quality, and loop seamlessness.
+Generate a 1920x1080 base image via AI, then animate it into a looping video for the duration of the mix.
 
-**Core Requirement:**
-- A spinning vinyl record aesthetic with custom genre-specific artwork.
-- Seamless looping (critical).
-- High resolution (1080p/4K) to minimize text artifacts.
+**Current Status:** Experimentation phase — evaluating AI image generation and animation APIs before full implementation. Aesthetic will be defined through system prompt iteration once we find tools we like.
 
-**Possible Implementation Concepts:**
+**Goals:**
+- Generate 1920x1080 base artwork via AI image generation
+- Animate the base image into a seamless loop via AI animation API
+- Define visual aesthetic through prompt engineering (system prompt TBD)
+- Experiment with different providers to find the best quality/cost balance
 
-1.  **Hybrid Approach (Code-Driven Animation)**
-    -   *Concept*: Generate static high-res artwork (e.g., Flux, DALL-E 3) and use code (MoviePy/FFmpeg) to apply rotation and texture overlays.
-    -   *Pros*: Perfect looping, zero video generation cost, highest resolution, crisp text.
-    -   *Cons*: Requires building the composition pipeline in code.
-
-2.  **Native AI Video Generation**
-    -   *Concept*: Use video-native models (Google Veo, Runway Gen-3) to generate the looping video directly from a prompt.
-    -   *Pros*: Potentially more organic lighting and movement.
-    -   *Cons*: Difficult to loop perfectly, high cost per second, text rendering often unreliable.
-
-3.  **Template Automation**
-    -   *Concept*: Use a pre-rendered high-quality template (After Effects/Blender) and programmatically swap the artwork texture.
-    -   *Pros*: Cinematic lighting and realism.
-    -   *Cons*: High complexity to automate (requires headless rendering or specialized cloud render farms).
-
-**Current Architecture Placeholder:**
-The system architecture includes a "Visual Generation Service" which will encapsulate whichever method is selected.
+**Two-Step Pipeline:**
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                   VISUAL GENERATION FLOW                     │
-│                  (Implementation TBD)                       │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
-│   ┌─────────────┐                                           │
-│   │   Concept   │  "Minimal Berlin Techno Vinyl"            │
-│   └──────┬──────┘                                           │
-│          │                                                   │
-│          ▼                                                   │
-│   ┌─────────────┐       ┌─────────────────────────────┐     │
-│   │ Visual Gen  │──────►│ ?  AI Video Model           │     │
-│   │  Service    │       │ ?  Code Animator (FFmpeg)   │     │
-│   └──────┬──────┘       │ ?  Template Engine          │     │
-│          │              └─────────────────────────────┘     │
-│          ▼                                                   │
-│   ┌─────────────┐                                           │
-│   │ Output Loop │  perfect_loop.mp4                         │
-│   └─────────────┘                                           │
+│   Step 1: Image Generation (1920x1080)                      │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  Concept + System Prompt                             │   │
+│   │         │                                            │   │
+│   │         ▼                                            │   │
+│   │  ┌─────────────┐                                     │   │
+│   │  │ AI Image    │  Candidates:                        │   │
+│   │  │ Generator   │  • Flux (fal.ai)                   │   │
+│   │  │             │  • DALL-E 3                         │   │
+│   │  │             │  • Midjourney API                   │   │
+│   │  │             │  • Ideogram                         │   │
+│   │  └──────┬──────┘                                     │   │
+│   │         │                                            │   │
+│   │         ▼                                            │   │
+│   │    base_artwork.png (1920x1080)                      │   │
+│   └─────────────────────────────────────────────────────┘   │
+│                          │                                   │
+│                          ▼                                   │
+│   Step 2: Animation                                          │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  base_artwork.png + animation prompt                 │   │
+│   │         │                                            │   │
+│   │         ▼                                            │   │
+│   │  ┌─────────────┐                                     │   │
+│   │  │ AI Animation│  Candidates:                        │   │
+│   │  │ API         │  • Runway Gen-3                     │   │
+│   │  │             │  • Kling                            │   │
+│   │  │             │  • Luma Dream Machine               │   │
+│   │  │             │  • Pika                             │   │
+│   │  │             │  • Stable Video Diffusion           │   │
+│   │  └──────┬──────┘                                     │   │
+│   │         │                                            │   │
+│   │         ▼                                            │   │
+│   │    animated_loop.mp4                                 │   │
+│   └─────────────────────────────────────────────────────┘   │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**Experimentation Checklist:**
+- [ ] Test image generation APIs (Flux, DALL-E 3, etc.) for 1920x1080 output
+- [ ] Test animation APIs (Runway, Kling, Luma, etc.) with static image input
+- [ ] Evaluate looping quality (seamless vs jarring)
+- [ ] Evaluate cost per generation
+- [ ] Define system prompt / aesthetic direction
+- [ ] Select final providers for implementation
+
+**Aesthetic Direction (TBD after experimentation):**
+- Spinning vinyl / record player aesthetic (original concept)
+- OR: Abstract visualizer responding to genre
+- OR: Ambient scene (rain on window, cityscape, etc.)
+- Final aesthetic will be locked in after prompt iteration
+
+**Deliverables (after experimentation):**
+- Selected image generation provider + system prompt
+- Selected animation provider + animation prompt template
+- Visual generation module (`src/coolio/visuals/`)
+- Thumbnail generator (crop/resize from base image)
 
 ---
 
@@ -607,14 +627,14 @@ Orchestrate the entire process end-to-end.
 
 | Component | Technology | Status |
 |-----------|------------|--------|
-| Curator Agent | OpenRouter (Claude, GPT, etc.) | ✅ Active |
+| Session Planner | OpenRouter (Claude, GPT, etc.) | ✅ Active |
 | Music Generation | ElevenLabs + Stable Audio | ✅ Active |
 | Asset Storage (Audio) | Cloudflare R2, boto3 | ✅ Active |
 | Library Query | Python with R2 filtering | ✅ Active |
-| Audio Processing | pydub, librosa, FFmpeg | Phase 3 |
-| Base Image Generation | DALL-E 3 / Leonardo.ai | Phase 4 |
-| Thumbnail Composer | Pillow (text overlay on base image) | Phase 4 |
-| Visual Animation | FFmpeg / MoviePy (TBD) | Phase 4 |
+| Audio Mixing | pydub, FFmpeg | ✅ Active |
+| Base Image Generation | TBD (Flux, DALL-E 3, Ideogram, etc.) | 🔬 Experimenting |
+| Visual Animation | TBD (Runway, Kling, Luma, etc.) | 🔬 Experimenting |
+| Thumbnail Composer | Pillow (crop from base image) | Phase 4 |
 | Video Composition | MoviePy, FFmpeg | Phase 5 |
 | YouTube Upload | YouTube Data API v3 | Phase 6 |
 | Orchestration | Python/cron → n8n | Phase 7 |
@@ -628,26 +648,23 @@ cooliomusic/
 ├── src/coolio/
 │   ├── cli.py              # CLI entry point (coolio command)
 │   ├── models.py           # Shared data models (TrackSlot, SessionPlan)
-│   ├── core/
-│   │   └── config.py       # Settings (API keys, R2 config)
-│   ├── agents/
-│   │   ├── __init__.py     # Agent exports
-│   │   └── curator.py      # Curator agent (planning + library reuse)
-│   ├── music/
-│   │   ├── agent.py        # Backwards-compat wrapper (delegates to Curator)
-│   │   ├── generator.py    # Orchestrates execution (reuse + generation)
-│   │   └── providers/
-│   │       ├── base.py     # Provider protocol
-│   │       ├── elevenlabs.py
-│   │       └── stable_audio.py
+│   ├── config.py           # Settings (API keys, R2 config)
+│   ├── djcoolio.py         # Session planner (concept → track plan)
+│   ├── generator.py        # Orchestrates execution (reuse + generation)
+│   ├── mixer.py            # Audio mixing (crossfade, normalize)
+│   ├── providers/
+│   │   ├── base.py         # Provider protocol
+│   │   ├── elevenlabs.py
+│   │   └── stable_audio.py
 │   ├── library/
 │   │   ├── storage.py      # R2 client (boto3 wrapper)
 │   │   ├── metadata.py     # TrackMetadata schema
 │   │   └── query.py        # Library querying with filters
-│   ├── visuals/            # (Phase 4 - planned)
+│   ├── visuals/            # (Phase 4 - in progress)
 │   ├── video/              # (Phase 5 - planned)
 │   ├── youtube/            # (Phase 6 - planned)
 │   └── pipeline/           # (Phase 7 - planned)
+├── experiments/visuals/    # Visual generation experiments
 ├── output/audio/           # Local session output (gitignored)
 ├── docs/                   # Documentation
 └── tests/
