@@ -191,6 +191,32 @@ class R2Storage:
             logger.error(f"Failed to upload image {local_path}: {e}")
             raise
 
+    def download_thumbnail(self, session_id: str, dest_dir: Path) -> Path | None:
+        """Download a session thumbnail from R2 if it exists.
+
+        Args:
+            session_id: Session identifier.
+            dest_dir: Local directory to save the thumbnail.
+
+        Returns:
+            Path to downloaded thumbnail, or None if not found in R2.
+        """
+        r2_key = f"sessions/{session_id}/thumbnail.png"
+
+        if not self.exists(r2_key):
+            logger.info(f"No thumbnail found in R2 for session {session_id}")
+            return None
+
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        local_path = dest_dir / f"{session_id}_thumbnail.png"
+
+        try:
+            self.download_file(r2_key, local_path)
+            return local_path
+        except ClientError as e:
+            logger.error(f"Failed to download thumbnail for {session_id}: {e}")
+            return None
+
     # -------------------------------------------------------------------------
     # Session Storage Methods
     # -------------------------------------------------------------------------

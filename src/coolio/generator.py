@@ -53,10 +53,9 @@ class SessionAbortError(Exception):
             f"{self.completed_tracks} completed, ${self.cost_spent:.2f} spent)"
         )
 
-# ElevenLabs advertises 5-minute generations, but anything well past 3 minutes
-# currently dies with a RemoteProtocolError (server disconnect) which burns credits.
-# To keep automation stable, route longer durations to Stable Audio instead.
-ELEVENLABS_SAFE_MAX_DURATION_MS = 180_000
+# ElevenLabs Music API hard limit: 10000ms to 300000ms (10s to 5min)
+# https://elevenlabs.io/docs/api-reference/music-generation
+ELEVENLABS_MAX_DURATION_MS = 300_000
 
 
 class GenerationSession:
@@ -195,11 +194,11 @@ class MusicGenerator:
 
         if (
             provider_name == "elevenlabs"
-            and slot.duration_ms > ELEVENLABS_SAFE_MAX_DURATION_MS
+            and slot.duration_ms > ELEVENLABS_MAX_DURATION_MS
         ):
             print(
-                "  ElevenLabs unreliable beyond "
-                f"{ELEVENLABS_SAFE_MAX_DURATION_MS/1000:.0f}s; using Stable Audio instead."
+                f"  ElevenLabs max is {ELEVENLABS_MAX_DURATION_MS/1000:.0f}s; "
+                "using Stable Audio instead."
             )
             provider_name = "stable_audio"
             slot.provider = "stable_audio"

@@ -168,48 +168,6 @@ def generate(
     _display_plan(plan)
     console.print()
 
-    # Step 2.5: Generate Visual (unless --skip-visual)
-    visual_r2_key: str | None = None
-    visual_prompt: str | None = None
-    if not skip_visual:
-        console.print("[bold cyan]Step 2.5:[/bold cyan] Generating visual thumbnail...")
-        if visual_hint:
-            console.print(f"  Hint: {visual_hint}")
-        try:
-            # Generate visual prompt from concept
-            visual_data = generate_visual_prompt(concept, visual_hint=visual_hint, model=model)
-            visual_prompt = str(visual_data["prompt"])
-            scene_type = str(visual_data["scene_type"])
-            console.print(f"  Scene type: {scene_type}")
-            console.print(f"  Prompt: {visual_prompt[:60]}...")
-
-            # Generate thumbnail image
-            visual_gen = VisualGenerator()
-            # Use a temporary session ID for now (will be replaced once audio is done)
-            from datetime import datetime
-            temp_session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            thumbnail_path = visual_gen.generate(
-                prompt=visual_prompt,
-                session_id=temp_session_id,
-            )
-            console.print(f"  Generated: {thumbnail_path}")
-
-            # Upload to R2 (if not skipping uploads)
-            if not skip_upload:
-                r2 = R2Storage()
-                visual_r2_key = r2.upload_image(thumbnail_path, temp_session_id)
-                console.print(f"  Uploaded: {visual_r2_key}")
-
-        except Exception as e:
-            console.print(f"  [red]Visual generation failed: {e}[/red]")
-            console.print("  [red]Aborting to avoid wasting credits on music generation.[/red]")
-            console.print("  [dim]Use --skip-visual to proceed without thumbnail.[/dim]")
-            raise typer.Exit(1)
-        console.print()
-    else:
-        console.print("[bold cyan]Step 2.5:[/bold cyan] Skipping visual generation (--skip-visual)")
-    console.print()
-
     if skip_audio:
         console.print("[yellow]Skipping audio generation (--skip-audio)[/yellow]")
         return
@@ -228,11 +186,50 @@ def generate(
         console.print(f"[red]Error executing plan: {e}[/red]")
         raise typer.Exit(1)
 
+    # Step 3.5: Generate Visual (unless --skip-visual)
+    # Done AFTER audio so we have the real session_dir to save to
+    visual_r2_key: str | None = None
+    visual_prompt: str | None = None
+    if not skip_visual:
+        console.print()
+        console.print("[bold cyan]Step 3.5:[/bold cyan] Generating visual thumbnail...")
+        if visual_hint:
+            console.print(f"  Hint: {visual_hint}")
+        try:
+            # Generate visual prompt from concept
+            visual_data = generate_visual_prompt(concept, visual_hint=visual_hint, model=model)
+            visual_prompt = str(visual_data["prompt"])
+            scene_type = str(visual_data["scene_type"])
+            console.print(f"  Scene type: {scene_type}")
+            console.print(f"  Prompt: {visual_prompt[:60]}...")
+
+            # Generate thumbnail image - save directly to session directory
+            visual_gen = VisualGenerator()
+            thumbnail_path = visual_gen.generate(
+                prompt=visual_prompt,
+                session_id=session.session_id,
+                output_dir=session.session_dir,
+            )
+            console.print(f"  Generated: {thumbnail_path}")
+
+            # Upload to R2 (if not skipping uploads)
+            if not skip_upload:
+                r2 = R2Storage()
+                visual_r2_key = r2.upload_image(thumbnail_path, session.session_id)
+                console.print(f"  Uploaded: {visual_r2_key}")
+
+        except Exception as e:
+            console.print(f"  [yellow]Visual generation failed: {e}[/yellow]")
+            console.print("  [dim]Session audio is complete but thumbnail is missing.[/dim]")
+    else:
+        console.print()
+        console.print("[bold cyan]Step 3.5:[/bold cyan] Skipping visual generation (--skip-visual)")
+
     # Summary
     visual_info = ""
     if visual_r2_key:
         visual_info = f"\nThumbnail: {visual_r2_key}"
-    elif visual_prompt and not skip_upload:
+    elif visual_prompt:
         visual_info = "\nThumbnail: (generated locally)"
 
     console.print()
@@ -418,6 +415,152 @@ def providers():
         "The Curator agent automatically selects the best provider for each track "
         "based on your concept."
     )
+
+
+@app.command()
+def download(
+    session_id: str = typer.Argument(
+        ...,
+        help="Session ID to download from R2 (e.g., session_20251204_210015)",
+    ),
+    output_dir: str = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output directory (default: output/audio/<session_id>)",
+    ),
+):
+    """
+    Download a session from R2 storage to local disk.
+
+    Downloads all tracks and metadata for a session so you can mix it locally.
+
+    Example:
+        coolio download session_20251204_210015
+        coolio download session_20251204_210015 -o ./my_session
+    """
+    from pathlib import Path
+
+    console.print(Panel(
+        f"[bold]Session:[/bold] {session_id}",
+        title="Download from R2"
+    ))
+    console.print()
+
+    try:
+        r2 = R2Storage()
+
+        # Get session metadata
+        console.print("[bold cyan]Fetching session metadata...[/bold cyan]")
+        session_meta = r2.get_session_metadata(session_id)
+        if not session_meta:
+            console.print(f"[red]Session not found in R2: {session_id}[/red]")
+            raise typer.Exit(1)
+
+        # Determine output directory
+        if output_dir:
+            dest_dir = Path(output_dir)
+        else:
+            dest_dir = Path("output/audio") / session_id
+
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        console.print(f"[bold]Output:[/bold] {dest_dir}")
+
+        # Get genre and track info from session metadata
+        genre = session_meta.get("genre", "electronic")
+        slots = session_meta.get("slots", [])
+        track_refs = {ref["title"]: ref for ref in session_meta.get("track_references", [])}
+
+        if not slots:
+            console.print("[red]No slots found in session metadata[/red]")
+            raise typer.Exit(1)
+
+        console.print(f"[bold]Genre:[/bold] {genre}")
+        console.print(f"[bold]Tracks:[/bold] {len(slots)}")
+        console.print()
+        console.print(f"[bold cyan]Downloading tracks from library...[/bold cyan]")
+
+        downloaded = 0
+        for slot in slots:
+            order = slot.get("order", 0)
+            title = slot.get("title", f"track_{order:02d}")
+            role = slot.get("role", "track")
+            source = slot.get("source", "library")
+
+            # Get track_id and genre based on source
+            if source == "library":
+                track_id = slot.get("track_id")
+                # Library tracks use their ORIGINAL genre folder (track_genre), not session genre
+                track_genre = slot.get("track_genre") or genre
+            else:
+                # Find the generated track by title in track_references
+                ref = track_refs.get(title, {})
+                track_id = ref.get("track_id")
+                # Generated tracks use the session genre (or ref genre)
+                track_genre = ref.get("genre") or genre
+
+            if not track_id:
+                console.print(f"  [yellow]?[/yellow] track_{order:02d}_{role} - no track_id found for '{title}'")
+                continue
+
+            # Build R2 key - tracks are stored in library/tracks/{track_genre}/{track_id}.mp3
+            audio_key = f"library/tracks/{track_genre}/{track_id}.mp3"
+            metadata_key = f"library/tracks/{track_genre}/{track_id}.json"
+
+            # Download audio file
+            filename = f"track_{order:02d}_{role}.mp3"
+            local_path = dest_dir / filename
+
+            try:
+                r2.download_file(audio_key, local_path)
+                console.print(f"  [green]✓[/green] {filename} - {title}")
+                downloaded += 1
+
+                # Try to download metadata too
+                import json
+                meta_path = dest_dir / f"track_{order:02d}_{role}.json"
+                try:
+                    track_meta = r2.read_json(metadata_key)
+                    track_meta["order"] = order  # Add order for mixer
+                    with open(meta_path, "w") as f:
+                        json.dump(track_meta, f, indent=2)
+                except Exception:
+                    # If no separate metadata, use slot info
+                    with open(meta_path, "w") as f:
+                        json.dump(slot, f, indent=2)
+
+            except Exception as e:
+                console.print(f"  [red]✗[/red] {filename} - {e}")
+
+        # Download thumbnail if it exists in R2
+        console.print()
+        console.print("[bold cyan]Downloading thumbnail...[/bold cyan]")
+        thumbnail_path = r2.download_thumbnail(session_id, dest_dir)
+        if thumbnail_path:
+            console.print(f"  [green]✓[/green] {thumbnail_path.name}")
+        else:
+            console.print("  [yellow]No thumbnail found in R2[/yellow]")
+
+        # Save session metadata
+        import json
+        session_meta_path = dest_dir / "session.json"
+        with open(session_meta_path, "w") as f:
+            json.dump(session_meta, f, indent=2, default=str)
+
+        thumbnail_info = f"\nThumbnail: {thumbnail_path.name}" if thumbnail_path else ""
+        console.print()
+        console.print(Panel(
+            f"[green]Downloaded {downloaded}/{len(slots)} tracks[/green]{thumbnail_info}\n\n"
+            f"Session: {dest_dir}\n\n"
+            f"[bold]Next step:[/bold] coolio mix {dest_dir}",
+            title="Complete"
+        ))
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Download failed: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command()

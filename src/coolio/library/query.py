@@ -52,6 +52,15 @@ class LibraryQuery:
                 logger.warning(f"Failed to process track metadata at {key}: {e}")
                 continue
 
-        logger.info(f"Found {len(candidates)} candidate tracks after filtering.")
+        # Sort candidates to prioritize ElevenLabs over Stable Audio
+        # ElevenLabs tracks come first (provider sort: "elevenlabs" < "stable_audio")
+        candidates.sort(key=lambda t: (t.provider != "elevenlabs", t.provider))
+
+        elevenlabs_count = sum(1 for t in candidates if t.provider == "elevenlabs")
+        stable_count = len(candidates) - elevenlabs_count
+        logger.info(
+            f"Found {len(candidates)} candidate tracks after filtering "
+            f"({elevenlabs_count} elevenlabs, {stable_count} stable_audio)"
+        )
         return candidates
 
