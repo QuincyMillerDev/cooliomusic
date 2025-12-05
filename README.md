@@ -43,10 +43,9 @@ Required API keys:
 
 | Service | Purpose | Cost | Get Key |
 |---------|---------|------|---------|
-| **OpenRouter** | LLM for planning | ~$0.01/plan | https://openrouter.ai/keys |
+| **OpenRouter** | LLM for planning/Image Gen | ~$0.01/plan | https://openrouter.ai/keys |
 | **Stable Audio** | Music generation | $0.20/track | https://stableaudio.com |
 | **ElevenLabs** | Music generation | ~$1.20/track | https://elevenlabs.io |
-| **Fal.ai** | Thumbnail (Flux) | ~$0.05/image | https://fal.ai/dashboard/keys |
 | **Cloudflare R2** | Storage | Free tier | https://dash.cloudflare.com |
 
 ## Quick Start
@@ -75,6 +74,7 @@ coolio compose output/audio/session_XXXXXXXX
 |---------|-------------|
 | `coolio plan <concept>` | Preview session plan without spending credits |
 | `coolio generate <concept>` | Generate tracks, thumbnail, upload to R2 |
+| `coolio download <session_id>` | Download session from R2 for local mixing |
 | `coolio mix <session_dir>` | Mix tracks with crossfades, upload to R2 |
 | `coolio compose <session_dir>` | Create video with waveform, upload to R2 |
 
@@ -100,12 +100,14 @@ coolio compose output/audio/session_XXXXXXXX
 
 ```bash
 coolio generate "concept" \
-  --duration 60 \            # Target duration in minutes (default: 60, PRIMARY)
-  --tracks 15 \              # Approximate track count (secondary to duration)
+  --duration 60 \            # Target duration in minutes (default: 60)
+  --model "anthropic/..." \  # OpenRouter model ID
+  --exclude-days 7 \         # Don't reuse tracks used in last N days
   --no-library \             # Skip library query, generate all new
-  --no-upload \              # Keep files local, don't upload to R2
-  --no-cleanup \             # Keep local files after R2 upload
-  --no-visual                # Skip thumbnail generation
+  --skip-audio \             # Generate plan only, no audio
+  --skip-upload \            # Don't upload new tracks to R2
+  --skip-visual \            # Skip thumbnail generation
+  --visual-hint "..."        # Style hint for thumbnail
 ```
 
 ### Mix Options
@@ -122,7 +124,7 @@ coolio mix <session_dir> \
 
 ```bash
 coolio compose <session_dir> \
-  --waveform-color "white@0.5" \  # Waveform color (FFmpeg format)
+  --waveform-color "white@0.9" \  # Waveform core color (FFmpeg format)
   --skip-metadata \               # Skip YouTube metadata generation
   --skip-upload                   # Don't upload to R2
 ```
@@ -165,9 +167,10 @@ coolio compose <session_dir> \
 ┌─────────────────────────────────────────────────────────────┐
 │  COMPOSE: Create YouTube video                               │
 │  • Static thumbnail as background                           │
-│  • Animated waveform overlay                                │
+│  • Animated glowing waveform overlay (centered)             │
 │  • 5-second fade-in from black                              │
 │  • Generate YouTube metadata (title, description, tags)     │
+│  • Auto-compress thumbnail for upload (<2MB)                │
 │  Upload: final_video.mp4 to R2                              │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -204,39 +207,3 @@ r2://cooliomusic/
       video/
         final_video.mp4
 ```
-
-## Project Structure
-
-```
-cooliomusic/
-├── src/coolio/
-│   ├── cli.py              # CLI commands
-│   ├── config.py           # Settings from .env
-│   ├── djcoolio.py         # LLM planning agent
-│   ├── generator.py        # Orchestrates track generation
-│   ├── mixer.py            # Audio mixing with crossfades
-│   ├── models.py           # Data models
-│   ├── library/
-│   │   ├── storage.py      # R2 storage operations
-│   │   ├── query.py        # Library search
-│   │   └── metadata.py     # Track metadata
-│   ├── providers/
-│   │   ├── stable_audio.py # Stable Audio API
-│   │   └── elevenlabs.py   # ElevenLabs API
-│   ├── video/
-│   │   ├── composer.py     # Video composition
-│   │   ├── waveform.py     # Waveform generation
-│   │   └── metadata.py     # YouTube metadata
-│   └── visuals/
-│       ├── generator.py    # Flux image generation
-│       └── prompts.py      # Visual prompt crafting
-├── docs/
-│   ├── PRD.md
-│   └── MUSIC_PROMPTING_BEST_PRACTICES.md
-└── output/audio/           # Local session output
-```
-
-## License
-
-MIT
-

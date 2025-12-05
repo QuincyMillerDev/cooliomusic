@@ -38,9 +38,8 @@ class VideoComposer:
         self,
         width: int = 1920,
         height: int = 1080,
-        waveform_height: int = 100,
-        waveform_color: str = "white@0.5",
-        waveform_position_from_bottom: int = 360,
+        waveform_height: int = 120,
+        waveform_color: str = "white@0.9",
         fade_in_duration: float = 5.0,
     ):
         """Initialize the video composer.
@@ -49,8 +48,7 @@ class VideoComposer:
             width: Video width in pixels.
             height: Video height in pixels.
             waveform_height: Height of the waveform bar.
-            waveform_color: Waveform color in FFmpeg format.
-            waveform_position_from_bottom: Distance from bottom of frame.
+            waveform_color: Waveform core color in FFmpeg format.
             fade_in_duration: Duration of fade-in from black/silence in seconds.
         """
         if not check_ffmpeg():
@@ -60,7 +58,6 @@ class VideoComposer:
         self.height = height
         self.waveform_height = waveform_height
         self.waveform_color = waveform_color
-        self.waveform_y = height - waveform_position_from_bottom - waveform_height
         self.fade_in_duration = fade_in_duration
 
     def compose(
@@ -93,12 +90,16 @@ class VideoComposer:
         # Build FFmpeg filter graph:
         # 1. Scale thumbnail to exact dimensions
         # 2. Loop thumbnail for duration
-        # 3. Generate waveform from audio
-        # 4. Overlay waveform on thumbnail
-        # 5. Mux with audio
+        # 3. Generate glow waveform (50% width, transparent)
+        # 4. Generate core waveform (50% width, opaque)
+        # 5. Overlay waveforms on thumbnail (centered)
+        # 6. Mux with audio
 
-        # Calculate waveform position
-        waveform_y = self.waveform_y
+        # Calculate waveform dimensions and position (50% width, centered)
+        wave_width = int(self.width * 0.5)
+        wave_height = self.waveform_height
+        x_pos = int((self.width - wave_width) / 2)
+        y_pos = int((self.height - wave_height) / 2)
 
         # FFmpeg filter complex:
         # [0:v] = thumbnail image
@@ -110,11 +111,15 @@ class VideoComposer:
             f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black,"
             f"loop=loop=-1:size=1:start=0,trim=duration={duration},setpts=PTS-STARTPTS,"
             f"fade=t=in:st=0:d={self.fade_in_duration}[bg];"
-            # Generate waveform from audio
-            f"[1:a]showwaves=s={self.width}x{self.waveform_height}:"
-            f"mode=cline:colors={self.waveform_color}:scale=sqrt:draw=full[wave];"
-            # Overlay waveform on background
-            f"[bg][wave]overlay=0:{waveform_y}:shortest=1[out]"
+            # Generate waveform glow (Layer 1) - Broader, transparent, blurred
+            f"[1:a]showwaves=s={wave_width}x{wave_height}:"
+            f"mode=cline:colors=white@0.15:scale=sqrt:draw=full,gblur=sigma=5[glow];"
+            # Generate waveform core (Layer 2) - Sharp, opaque, slightly rounded
+            f"[1:a]showwaves=s={wave_width}x{wave_height}:"
+            f"mode=cline:colors={self.waveform_color}:scale=sqrt:draw=full,gblur=sigma=1[core];"
+            # Overlay waveforms on background (centered)
+            f"[bg][glow]overlay={x_pos}:{y_pos}:shortest=1[tmp];"
+            f"[tmp][core]overlay={x_pos}:{y_pos}:shortest=1[out]"
         )
 
         cmd = [
@@ -200,7 +205,45 @@ class VideoComposer:
 
         output_path = session_dir / output_filename
 
-        return self.compose(thumbnail_path, audio_path, output_path)
+        # Compose the video
+        result = self.compose(thumbnail_path, audio_path, output_path)
+
+        # Check thumbnail size for YouTube upload (must be < 2MB)
+        # We do this AFTER video composition so the video uses the high-quality source,
+        # but we ensure a compliant file exists for upload.
+        self._ensure_thumbnail_upload_ready(thumbnail_path)
+
+        return result
+
+    def _ensure_thumbnail_upload_ready(self, thumbnail_path: Path) -> None:
+        """Ensure a version of the thumbnail exists that is < 2MB for YouTube upload."""
+        if not thumbnail_path.exists():
+            return
+
+        size_mb = thumbnail_path.stat().st_size / (1024 * 1024)
+        if size_mb <= 2.0:
+            logger.info(f"Thumbnail size OK for upload: {size_mb:.1f} MB")
+            return
+
+        logger.info(f"Thumbnail > 2MB ({size_mb:.1f} MB), creating optimized version for upload...")
+        
+        # Create a compressed version
+        optimized_path = thumbnail_path.parent / f"{thumbnail_path.stem}_upload_ready.jpg"
+        
+        try:
+            # Use FFmpeg to compress (convert to JPG quality 15)
+            # -q:v 15 usually results in <500KB for 1080p images
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", str(thumbnail_path),
+                    "-q:v", "15", str(optimized_path)
+                ],
+                capture_output=True,
+                check=True
+            )
+            logger.info(f"Created optimized thumbnail: {optimized_path.name}")
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to compress thumbnail: {e}")
 
     def _find_thumbnail(self, session_dir: Path) -> Optional[Path]:
         """Find thumbnail image in session directory.
