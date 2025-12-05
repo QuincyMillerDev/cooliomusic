@@ -157,8 +157,6 @@ class StableAudioProvider:
             provider="stable_audio",
             bpm=bpm,
             energy=energy,
-            composition_plan=None,
-            song_metadata=None,
         )
 
 

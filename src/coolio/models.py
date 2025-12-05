@@ -39,6 +39,7 @@ class TrackSlot:
 
     # For library tracks (source="library")
     track_id: str | None = None
+    track_genre: str | None = None  # Original genre folder where track is stored
 
     # For generation (source="generate") or library tracks with known title
     title: str | None = None

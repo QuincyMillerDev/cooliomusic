@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 
 @dataclass
@@ -37,9 +37,6 @@ class GeneratedTrack:
     provider: str
     bpm: int
     energy: int
-    # Provider-specific metadata
-    composition_plan: dict[str, Any] | None = None
-    song_metadata: dict[str, Any] | None = None
 
 
 @runtime_checkable

@@ -1,66 +1,87 @@
-"""Flux image generation for YouTube thumbnails.
+"""Nano Banana Pro image generation for YouTube thumbnails.
 
-Generates 1920x1080 images via fal.ai's Flux model.
+Generates 1920x1080 images via OpenRouter's Nano Banana Pro model
+(google/gemini-3-pro-image-preview) using a photorealistic reference
+image for consistent style.
 """
 
-import hashlib
+import base64
 import logging
 import tempfile
 import time
-import urllib.request
 from pathlib import Path
+
+from openai import OpenAI
 
 from coolio.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-try:
-    import fal_client
-except ImportError:
-    fal_client = None  # type: ignore[assignment]
+# Reference image path (bundled in codebase)
+REFERENCE_IMAGE_PATH = (
+    Path(__file__).parent.parent.parent.parent
+    / "src"
+    / "coolio"
+    / "assets"
+    / "images"
+    / "cooliomusicreferencephoto.png"
+)
+
+
+def _load_reference_image() -> str:
+    """Load and encode the reference image as base64.
+
+    Returns:
+        Base64-encoded PNG data.
+
+    Raises:
+        FileNotFoundError: If reference image is missing.
+    """
+    # Handle both installed package and dev paths
+    paths_to_try = [
+        REFERENCE_IMAGE_PATH,
+        Path(__file__).parent.parent / "assets" / "images" / "cooliomusicreferencephoto.png",
+    ]
+
+    for path in paths_to_try:
+        if path.exists():
+            with open(path, "rb") as f:
+                return base64.b64encode(f.read()).decode("utf-8")
+
+    raise FileNotFoundError(
+        f"Reference image not found. Tried: {[str(p) for p in paths_to_try]}"
+    )
 
 
 class VisualGenerator:
-    """Generates thumbnail images using Flux via fal.ai."""
+    """Generates thumbnail images using Nano Banana Pro via OpenRouter."""
+
+    MODEL = "google/gemini-3-pro-image-preview"
 
     def __init__(
         self,
-        model: str = "fal-ai/flux/dev",
         width: int = 1920,
         height: int = 1080,
     ):
         """Initialize the visual generator.
 
         Args:
-            model: Flux model variant (dev, schnell, pro).
             width: Output image width.
             height: Output image height.
         """
-        if fal_client is None:
-            raise ImportError(
-                "fal-client not installed. Run: pip install fal-client"
-            )
-
-        self.model = model
         self.width = width
         self.height = height
+        self._reference_b64: str | None = None
 
-    def _get_deterministic_seed(self, session_id: str) -> int:
-        """Generate a deterministic seed from session ID.
-
-        This ensures the same session always produces the same image
-        (assuming the same prompt).
-
-        Args:
-            session_id: The session identifier.
+    def _get_reference_image(self) -> str:
+        """Get the reference image, loading lazily.
 
         Returns:
-            Integer seed derived from session ID.
+            Base64-encoded reference image.
         """
-        hash_bytes = hashlib.sha256(session_id.encode()).digest()
-        # Use first 4 bytes as seed (mod to keep in reasonable range)
-        seed = int.from_bytes(hash_bytes[:4], "big") % (2**31)
-        return seed
+        if self._reference_b64 is None:
+            self._reference_b64 = _load_reference_image()
+        return self._reference_b64
 
     def generate(
         self,
@@ -71,58 +92,75 @@ class VisualGenerator:
         """Generate a thumbnail image.
 
         Args:
-            prompt: Flux prompt for image generation.
-            session_id: Session ID for deterministic seeding and filename.
+            prompt: Image prompt describing the scene.
+            session_id: Session ID for filename.
             output_dir: Directory to save the image (defaults to temp).
 
         Returns:
             Path to the generated image file.
         """
         s = get_settings()
-        api_key = s.fal_api_key
-        if not api_key:
-            raise ValueError("FAL_KEY environment variable not set")
 
-        # Set API key in environment for fal_client
-        import os
-        os.environ["FAL_KEY"] = api_key
+        client = OpenAI(
+            base_url=s.openrouter_base_url,
+            api_key=s.openrouter_api_key,
+        )
 
-        seed = self._get_deterministic_seed(session_id)
+        ref_b64 = self._get_reference_image()
 
-        logger.info(f"Generating thumbnail with {self.model}...")
+        logger.info(f"Generating thumbnail with {self.MODEL}...")
         logger.info(f"  Prompt: {prompt[:80]}{'...' if len(prompt) > 80 else ''}")
         logger.info(f"  Size: {self.width}x{self.height}")
-        logger.info(f"  Seed: {seed}")
 
         start_time = time.time()
 
-        # Build request arguments
-        arguments = {
-            "prompt": prompt,
-            "image_size": {
-                "width": self.width,
-                "height": self.height,
-            },
-            "num_images": 1,
-            "seed": seed,
-            "enable_safety_checker": False,
-        }
+        # Build multimodal message with reference image + prompt
+        generation_prompt = f"""Use this reference image as the STYLE GUIDE for composition, lighting, and photorealistic quality.
 
-        # Submit and wait for result
-        result = fal_client.subscribe(
-            self.model,
-            arguments=arguments,
-            with_logs=False,
+STYLE REQUIREMENTS from reference:
+- Photorealistic quality (looks like a real photograph, not AI-generated)
+- Industrial concrete warehouse environment with exposed beams
+- Pioneer CDJ-2000/3000 DJ setup on concrete pedestal
+- Atmospheric haze/smoke diffusing light
+- Dramatic single-source overhead lighting
+- Slight fisheye/wide-angle lens distortion
+- No people, empty liminal space
+- 16:9 aspect ratio ({self.width}x{self.height})
+
+NOW GENERATE THIS SCENE:
+{prompt}
+
+Keep the photorealistic DJ booth anchor but adapt the environment, lighting color, and atmosphere to match the prompt above."""
+
+        # IMPORTANT: modalities=["image", "text"] is REQUIRED for image generation
+        response = client.chat.completions.create(
+            model=self.MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{ref_b64}",
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": generation_prompt,
+                        },
+                    ],
+                }
+            ],
+            extra_body={"modalities": ["image", "text"]},
         )
 
         elapsed = time.time() - start_time
         logger.info(f"Generation complete in {elapsed:.1f}s")
 
-        # Extract image URL
-        if "images" not in result or len(result["images"]) == 0:
-            raise ValueError(f"Unexpected Flux response format: {result}")
-
-        image_url = result["images"][0]["url"]
+        # Extract image from response
+        # Nano Banana Pro returns images in message.images array
+        image_data = self._extract_image_from_response(response)
 
         # Determine output path
         if output_dir:
@@ -134,10 +172,73 @@ class VisualGenerator:
             temp_dir.mkdir(parents=True, exist_ok=True)
             output_path = temp_dir / f"{session_id}_thumbnail.png"
 
-        # Download image
-        logger.info(f"Downloading to {output_path}...")
-        urllib.request.urlretrieve(image_url, output_path)
+        # Save image
+        with open(output_path, "wb") as f:
+            f.write(image_data)
 
         logger.info(f"Thumbnail saved: {output_path}")
         return output_path
 
+    def _extract_image_from_response(self, response) -> bytes:
+        """Extract image data from Nano Banana Pro response.
+
+        Args:
+            response: OpenAI-format response from OpenRouter.
+
+        Returns:
+            Raw image bytes.
+
+        Raises:
+            ValueError: If no image found in response.
+        """
+        message = response.choices[0].message
+
+        # Primary method: Check message.images (OpenRouter's documented format)
+        # Images are returned as: message.images[].image_url.url = "data:image/...;base64,..."
+        if hasattr(message, "images") and message.images:
+            image_obj = message.images[0]
+            # Handle both object and dict formats
+            if hasattr(image_obj, "image_url"):
+                url = image_obj.image_url.url
+            elif isinstance(image_obj, dict):
+                url = image_obj.get("image_url", {}).get("url", "")
+            else:
+                url = ""
+
+            if url and url.startswith("data:image"):
+                # Extract base64 data after the comma
+                b64_data = url.split(",", 1)[1]
+                return base64.b64decode(b64_data)
+
+        # Fallback: Check for image in content parts (multimodal response)
+        if hasattr(message, "content") and isinstance(message.content, list):
+            for part in message.content:
+                if isinstance(part, dict):
+                    # Check for inline base64 image
+                    if part.get("type") == "image_url":
+                        url = part.get("image_url", {}).get("url", "")
+                        if url.startswith("data:image"):
+                            b64_data = url.split(",", 1)[1]
+                            return base64.b64decode(b64_data)
+                    # Check for direct base64 field
+                    if "image" in part:
+                        return base64.b64decode(part["image"])
+
+        # Fallback: Check if content is a string with base64 data
+        content = message.content
+        if isinstance(content, str) and content:
+            # Look for base64 image pattern
+            if "data:image" in content:
+                import re
+                match = re.search(r"data:image/[^;]+;base64,([A-Za-z0-9+/=]+)", content)
+                if match:
+                    return base64.b64decode(match.group(1))
+
+        # Build detailed error message
+        has_images = hasattr(message, "images") and message.images
+        raise ValueError(
+            f"Could not extract image from response. "
+            f"Has images attr: {has_images}, "
+            f"Content type: {type(content)}, "
+            f"Content preview: {str(content)[:200] if content else 'None'}"
+        )

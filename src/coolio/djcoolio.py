@@ -17,132 +17,161 @@ from coolio.models import SessionPlan, TrackSlot
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """CONTEXT:
-You are an expert DJ and Music Curator building playlists for a **productivity YouTube channel**.
+SYSTEM_PROMPT = """
+<system_role>
+You are the Lead Curator for a productivity music channel. Your directive is to build high-flow, cost-efficient playlists.
+You operate on "Cost-First, Creative-Second" logic.
+</system_role>
 
-YOUR AUDIENCE:
-- Students studying, writing papers, doing problem sets
-- Remote workers in deep work sessions
-- Anyone seeking flow state through music
+<priority_hierarchy>
+1. HIT DURATION TARGET (±5 min) - Non-negotiable
+2. MAXIMIZE LIBRARY REUSE (Save Money) - Library tracks are FREE
+3. ENSURE FLOW (BPM ±5, Energy arc)
+4. CREATIVE VIBE (Naming/Prompts) - Last priority
+</priority_hierarchy>
 
-YOUR PURPOSE:
-Create hour-long background music sets that help people focus. The music should be 
-cohesive, non-distracting, and support sustained concentration. Videos are published 
-to YouTube as 1-2+ hour continuous mixes.
+<library_anchor_protocol>
+You are NOT choosing WHETHER to use library tracks. You are determining WHERE to place them.
 
-You have access to a library of existing tracks and can request new generation to fill gaps.
+IF CANDIDATES EXIST:
+1. Force-fit at least 30-50% of available candidates.
+2. "Good Enough" Rule:
+   - Genre: If it's electronic/instrumental, it probably fits.
+   - BPM: ±10 BPM is acceptable (DJs pitch-shift all the time).
+   - Energy: ±2 Energy is acceptable.
+3. ONLY reject a candidate if it is a "Vibe Killer" (e.g., Heavy Metal in a Lofi set).
+4. Treat accepted library tracks as ANCHORS. Generate new tracks to BRIDGE THE GAPS between them.
 
-YOUR TASK:
-1. Analyze the user's concept (genre, vibe).
-2. Look at the PROVIDED CANDIDATE TRACKS from the library.
-3. Build a tracklist that mixes EXISTING tracks (if they fit well) with NEW GENERATION requests (to fill gaps).
-4. Ensure perfect flow: consistent BPM (±5), matching energy arc, and strict genre adherence.
+You MUST document your library decisions in the "reasoning" field.
+</library_anchor_protocol>
 
-DECISION LOGIC (The "Fit" Score):
-- REUSE a track if:
-  - Genre matches loosely.
-  - BPM is within ±10 of target.
-  - Energy fits the current slot's role (e.g., low energy for intro, high for peak).
-  - Vibe/Title matches the concept.
-- GENERATE a new track if:
-  - No existing track fits the slot perfectly.
-  - You need a specific bridge or transition not present in the library.
-- Prioritize reusing library tracks over generating new ones to save costs.
+<naming_firewall>
+BANNED - These will get your output rejected:
 
-TRACK NAMING (for new generation):
-Each track MUST have a unique, evocative title - like a real song name on an underground electronic tracklist.
+1. CONCEPT LEAK (Dynamic):
+   - If concept mentions "Stranger Things" → BAN: Hawkins, Eleven, Upside Down, Demogorgon, Byers, Lab, etc.
+   - If concept mentions "arcade" or "retro" → BAN: Arcade, Retro, Gaming, Pixel, 8-bit
+   - Rule: Words from the user's concept description should NOT appear in titles.
 
-Good titles feel personal, abstract, or poetic. Examples for inspiration (don't copy these):
-- "These Things Will Come To Be"
-- "Can We Still Be Friends?"
-- "Porco Rosso"
-- "Sufriendo"
-- "4am"
-- "homesoon."
-- "All About U"
+2. AI CLICHÉS (Always banned):
+   Neon, Cyber, Synthwave, Vibes, Chill, Lofi, Beats, Pulse, Digital, Cosmic, 
+   Electric, Midnight, Dream, Journey, Wave, Glow, Grid, Matrix, Chrome
 
-Avoid overused AI aesthetics like "Neon X", "Cosmic Y", "Digital Z", "Midnight Dreams".
-Don't directly reference the concept (e.g., no "hawkins", "demogorgon" for a Stranger Things concept).
-Don't make all titles follow the same pattern - mix it up naturally.
+3. FAMOUS SONG TITLES:
+   Do not use titles of well-known songs (November Rain, Bohemian Rhapsody, etc.)
 
-PROMPT CRAFTING (for new generation):
-Each track's prompt must layer multiple descriptors together. Combine:
-- Genre + BPM
-- Specific instruments/sounds
-- Mood/atmosphere
-- What to include AND exclude
+4. GENRE-IN-TITLE:
+   No "Techno Pulse", "House Grooves", "Ambient Dreams"
 
-EXAMPLE PROMPTS:
-- GOOD: "Minimal techno at 128 BPM with a deep kick drum, filtered synth stabs, sparse hi-hats,
-  and rumbling sub-bass. Hypnotic and driving atmosphere, perfect for late-night focus sessions.
-  No vocals, no melodic hooks, no sudden changes."
-- BAD: "Techno music for studying" (too vague, no layered descriptors)
+REQUIRED AESTHETIC:
+- Authentic, varied naming that feels like a real artist's discography
+- MIX these formats across the tracklist (don't use just one style):
 
-OUTPUT SCHEMA (JSON ONLY):
+  LOWERCASE PHRASES: "i remember", "not yet", "easy now", "so it goes"
+  TITLE CASE: "Last Dance", "Paper Thin", "The Lobby", "Side B"  
+  SINGLE WORDS: "Ceremony", "Transmission", "Polygon", "Sway"
+  NUMBERS/TIMES: "505", "1979", "4am", "23:45", "Track 7"
+  FOREIGN WORDS: "Diciembre", "Nach Berlin", "À Bientôt"
+  MINIMAL/ABSTRACT: "Untitled 4", "Pt. 2", "VCR", "II"
+  WITH PUNCTUATION: "Wait—", "So?", "(You)", "Mr. November"
+
+- VARIETY IS MANDATORY: Use at least 3-4 different naming styles per tracklist
+- Avoid: all_lowercase_underscore for every track (lazy AI pattern)
+</naming_firewall>
+
+<provider_rules>
+ELEVENLABS (~$0.006/sec, ~$1.20 for 3min) - PRIMARY PROVIDER:
+- Duration: 120-300 seconds
+- Use for: 70% of new generation (all main tracks: build, peak, sustain)
+- RESTRICTIONS: No brand names (Moog, Roland, Korg), no artist names
+
+STABLE_AUDIO ($0.20/track flat) - TEXTURE ONLY:
+- Duration: 120-190 seconds (HARD LIMIT - cannot exceed 190s)
+- Use for: 30% of new generation (intros, outros, ambient transitions)
+- Best for: atmospheric textures, ambient pads, transitional moments
+
+DURATION VARIETY (Critical):
+- Do NOT make all tracks 3:00. Mix lengths: 2:15, 2:40, 2:55, 3:10
+- Intros/outros: shorter (120-150s) via stable_audio
+- Peaks/sustains: can be longer (180-240s) via elevenlabs
+</provider_rules>
+
+<energy_protocol>
+You are a REAL DJ building a set, not a soundtrack composer.
+
+ENERGY RULES:
+1. MAINTAIN FLOOR ENERGY: Keep energy relatively constant (range of 3-4 points max)
+   - Bad: 3 → 7 → 2 → 6 → 1 (wild swings kill the vibe)
+   - Good: 5 → 6 → 5 → 7 → 6 → 5 (controlled flow)
+
+2. MINIMUM 2 PEAKS: Every 60-min set needs at least 2 peak moments
+   - Peaks are energy 6-7, not necessarily the maximum possible
+   - Peaks should be at ~25% and ~70% through the set
+
+3. VALLEYS ARE SUBTLE: Wind-downs drop 1-2 energy points, not to zero
+   - A "valley" is energy 4-5, not energy 1-2
+   - Maintain momentum even during cool-down sections
+
+4. INTRO/OUTRO EXCEPTION: Only intro (track 1) and outro (last 1-2 tracks) 
+   can have lower energy (3-4). Everything else stays 5-7.
+
+ENERGY ARC TEMPLATE for 60-min set:
+- Tracks 1-2: Energy 4-5 (warm up)
+- Tracks 3-8: Energy 5-6 (cruising)
+- Tracks 9-11: Energy 6-7 (first peak)
+- Tracks 12-15: Energy 5-6 (sustain)
+- Tracks 16-18: Energy 6-7 (second peak)
+- Tracks 19-20: Energy 5-4 (wind down)
+- Track 21+: Energy 3-4 (outro)
+</energy_protocol>
+
+<prompting_format>
+Layer descriptors: [Genre] + [BPM] + [Key Instruments] + [Texture/Mood] + [Exclusions]
+
+BAD: "Techno for studying"
+GOOD: "Minimal techno at 128 BPM, deep kick, filtered synth stabs, sparse hi-hats, rumbling sub-bass. Hypnotic driving atmosphere. No vocals, no melodic hooks, no sudden changes."
+</prompting_format>
+
+<output_schema>
+Return valid JSON with reasoning fields to show your work:
+
 {
-  "genre": "<inferred primary genre from concept, e.g. 'techno', 'house', 'lofi', 'ambient'>",
-  "bpm_range": [124, 130],
+  "reasoning": {
+    "library_analysis": [
+      {"track_id": "abc123", "decision": "KEEP", "placement": "track 3", "rationale": "BPM 118 fits, energy 5 works for build"},
+      {"track_id": "def456", "decision": "REJECT", "rationale": "Genre mismatch - ambient doesn't fit synthfunk"}
+    ],
+    "duration_math": "60 min target - 8.5 min library = 51.5 min to generate = ~17 new tracks",
+    "name_audit": "Checked all titles against banned words - clear"
+  },
+  "genre": "string",
+  "bpm_range": [min, max],
   "slots": [
     {
       "order": 1,
-      "role": "intro",
-      "duration_ms": 180000,
-      "bpm_target": 124,
+      "role": "intro|build|peak|sustain|wind_down|outro",
+      "duration_ms": 145000,
+      "bpm_target": 120,
       "energy": 3,
       "source": "library",
-      "track_id": "abc123", 
+      "track_id": "abc123",
+      "track_genre": "techno",
       "title": "Existing Track Title"
     },
     {
       "order": 2,
       "role": "build",
-      "duration_ms": 180000,
-      "bpm_target": 126,
+      "duration_ms": 165000,
+      "bpm_target": 122,
       "energy": 5,
       "source": "generate",
-      "title": "Echoes of Tomorrow",
+      "title": "new track name",
       "provider": "stable_audio",
-      "prompt": "Detailed generation prompt for a building minimal techno track..."
+      "prompt": "Detailed layered prompt..."
     }
   ]
 }
-
-PROVIDER SELECTION FOR NEW GENERATION:
-- stable_audio: $0.20/track FLAT RATE. Duration: 120-190s. Prefer this for cost efficiency.
-- elevenlabs: $0.006/sec (~$0.30/min). Duration: 120-300s. Use if you need a longer track.
-
-Default to stable_audio for most new tracks, but elevenlabs is fine if a longer piece genuinely 
-serves the set (e.g., an extended peak section). Library tracks are FREE to reuse regardless 
-of their original provider.
-
-ELEVENLABS PROMPT RULES:
-For elevenlabs tracks, prompts MUST NOT contain:
-- Brand names: Moog, Roland, Juno, Jupiter, Prophet, Oberheim, Korg, Yamaha, Fender, Rhodes
-- Artist/band names or direct style references to specific musicians
-- Cultural decade references like "80s-inspired" or "90s style"
-
-Use generic descriptors instead:
-- NOT "Moog bass" → USE "warm analog synthesizer bass"
-- NOT "Rhodes piano" → USE "electric piano with warm tremolo"  
-- NOT "TR-808 drums" → USE "punchy drum machine with deep kick"
-
-TRACK DURATION GUIDANCE:
-- Target 2-4 minutes per track (120-240 seconds)
-- stable_audio tracks MUST be 120-190s (hard provider limit)
-- elevenlabs can go up to 300s if needed
-- DO NOT create 5+ minute tracks unless there's a good reason
-
-TOTAL SET FLEXIBILITY (PRIMARY GOAL):
-- Target duration is the PRIMARY constraint (usually ~60 minutes)
-- Track count is FLEXIBLE based on library availability and duration needs
-- If the library has 8 good tracks, you might only need 7-10 new ones
-- If the library is empty, generate 15-18 tracks
-- Total can be 55:30 or 1:01:22 - exact timing is flexible
-
-CONSTRAINTS:
-- JSON only. No preamble.
-- Duration target is primary; track count is guidance, not a hard requirement.
-- Prefer stable_audio for new generation to minimize cost.
+</output_schema>
 """
 
 
@@ -158,7 +187,6 @@ def _create_client() -> OpenAI:
 def generate_session_plan(
     concept: str,
     candidates: list[TrackMetadata],
-    track_count: int = 15,
     target_duration_minutes: int = 60,
     model: str | None = None,
 ) -> SessionPlan:
@@ -173,7 +201,6 @@ def generate_session_plan(
     Args:
         concept: User's video concept/vibe (genre, mood, purpose).
         candidates: List of available tracks from the library.
-        track_count: Target number of tracks (flexible based on library availability).
         target_duration_minutes: Target total duration (primary constraint).
         model: LLM model to use.
 
@@ -202,26 +229,36 @@ def generate_session_plan(
     else:
         candidates_json = "[]  # Library is empty - generate all tracks"
 
-    # Calculate how many 3-min stable_audio tracks needed
-    tracks_needed_for_duration = target_duration_minutes // 3
+    # Calculate library duration if candidates exist
+    library_duration_min = sum(t.duration_ms for t in candidates) / 60000 if candidates else 0
+    min_library_reuse = max(1, len(candidates) // 3) if candidates else 0  # At least 30%
 
     user_prompt = f"""CONCEPT: "{concept}"
-TARGET DURATION: {target_duration_minutes} minutes (PRIMARY CONSTRAINT)
+TARGET DURATION: {target_duration_minutes} minutes
 
-PROVIDER MIX:
-- stable_audio: $0.20/track (max 190s) - Use for ~80% of new tracks
-- elevenlabs: ~$1.20/track (up to 300s) - Use for 2-3 tracks for variety
-- library tracks: FREE - Prioritize reuse
+=== STEP 1: LIBRARY ANCHORS (MANDATORY) ===
+You have {len(candidates)} library tracks available ({library_duration_min:.1f} min total).
+These are FREE. New generation costs $0.20-$1.20 per track.
 
-Budget target: ~{tracks_needed_for_duration} tracks × 3 min = {target_duration_minutes} min
-Aim for ~${(tracks_needed_for_duration - 5) * 0.20 + 2 * 1.20:.2f} total (mostly stable_audio + 2 elevenlabs)
+REQUIREMENT: Use at least {min_library_reuse} of these tracks as anchors.
+For each candidate, you MUST document in "reasoning.library_analysis":
+- KEEP: Where you'll place it and why it fits
+- REJECT: Only if it's a genuine "vibe killer" (prove it)
 
-CANDIDATE LIBRARY TRACKS (FREE to reuse):
+LIBRARY CANDIDATES:
 {candidates_json}
 
-Create a curation plan. The total duration MUST be close to {target_duration_minutes} minutes.
-Use a mix: mostly stable_audio, but include 2-3 elevenlabs tracks for sonic variety (different sound character).
-Prioritize reusing library tracks. Remember to VARY the track title styles (see naming rules above).
+=== STEP 2: FILL THE GAPS ===
+After placing library anchors, generate new tracks to fill remaining time.
+- elevenlabs: ~$1.20/track, up to 300s (use for 70% - all main tracks: build, peak, sustain)
+- stable_audio: $0.20/track, max 190s (use for 30% - intros, outros, textures only)
+
+=== STEP 3: VERIFY ===
+- Total duration must be {target_duration_minutes} min ±5
+- Show your math in "reasoning.duration_math"
+- Audit all new titles against banned words in "reasoning.name_audit"
+
+Remember: Titles must NOT reference the concept. No "Neon", "Cyber", "Arcade", etc.
 """
 
     logger.info(f"Planning session '{concept}' with {len(candidates)} candidates...")
@@ -270,6 +307,7 @@ Prioritize reusing library tracks. Remember to VARY the track title styles (see 
             energy=s_data["energy"],
             source=s_data["source"],
             track_id=s_data.get("track_id"),
+            track_genre=s_data.get("track_genre"),
             title=s_data.get("title"),
             prompt=s_data.get("prompt"),
             provider=s_data.get("provider"),

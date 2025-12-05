@@ -23,16 +23,13 @@ class Settings(BaseSettings):
     # OpenRouter (OpenAI-compatible API for multi-model support)
     openrouter_api_key: str = Field(..., alias="OPENROUTER_API_KEY")
     openrouter_model: str = Field(
-        default="anthropic/claude-sonnet-4.5",
+        default="anthropic/claude-opus-4.5",
         alias="OPENROUTER_MODEL",
     )
     openrouter_base_url: str = Field(
         default="https://openrouter.ai/api/v1",
         alias="OPENROUTER_BASE_URL",
     )
-
-    # Fal.ai (Flux image generation)
-    fal_api_key: str = Field(..., alias="FAL_KEY")
 
     # Cloudflare R2 Storage
     r2_access_key_id: str = Field(..., alias="R2_ACCESS_KEY_ID")

@@ -71,23 +71,11 @@ def generate(
         ...,
         help="Video concept describing genre, vibe, mood, and purpose",
     ),
-    tracks: int = typer.Option(
-        15,
-        "--tracks",
-        "-t",
-        help="Approximate track count (duration is the real target)",
-    ),
     duration: int = typer.Option(
         60,
         "--duration",
         "-d",
         help="Target total duration in minutes",
-    ),
-    budget: float = typer.Option(
-        5.00,
-        "--budget",
-        "-b",
-        help="Maximum budget in USD (informational)",
     ),
     model: str = typer.Option(
         None,
@@ -119,6 +107,11 @@ def generate(
         False,
         "--skip-visual",
         help="Skip visual thumbnail generation",
+    ),
+    visual_hint: str = typer.Option(
+        None,
+        "--visual-hint",
+        help="Atmosphere/style hints for thumbnail (e.g., 'Upside Down with floating particles')",
     ),
 ):
     """
@@ -158,15 +151,13 @@ def generate(
     # Step 2: Planning Session
     console.print("[bold cyan]Step 2:[/bold cyan] Planning session...")
     console.print(f"  Model: {model or get_settings().openrouter_model}")
-    console.print(f"  Target: {tracks} tracks, {duration} minutes")
-    console.print(f"  Budget: ${budget:.2f}")
+    console.print(f"  Target: {duration} minutes")
     console.print()
 
     try:
         plan = generate_session_plan(
             concept=concept,
             candidates=candidates,
-            track_count=tracks,
             target_duration_minutes=duration,
             model=model,
         )
@@ -182,9 +173,11 @@ def generate(
     visual_prompt: str | None = None
     if not skip_visual:
         console.print("[bold cyan]Step 2.5:[/bold cyan] Generating visual thumbnail...")
+        if visual_hint:
+            console.print(f"  Hint: {visual_hint}")
         try:
             # Generate visual prompt from concept
-            visual_data = generate_visual_prompt(concept, model=model)
+            visual_data = generate_visual_prompt(concept, visual_hint=visual_hint, model=model)
             visual_prompt = str(visual_data["prompt"])
             scene_type = str(visual_data["scene_type"])
             console.print(f"  Scene type: {scene_type}")
@@ -208,8 +201,10 @@ def generate(
                 console.print(f"  Uploaded: {visual_r2_key}")
 
         except Exception as e:
-            console.print(f"  [yellow]Visual generation failed: {e}[/yellow]")
-            console.print("  Proceeding without thumbnail.")
+            console.print(f"  [red]Visual generation failed: {e}[/red]")
+            console.print("  [red]Aborting to avoid wasting credits on music generation.[/red]")
+            console.print("  [dim]Use --skip-visual to proceed without thumbnail.[/dim]")
+            raise typer.Exit(1)
         console.print()
     else:
         console.print("[bold cyan]Step 2.5:[/bold cyan] Skipping visual generation (--skip-visual)")
@@ -259,23 +254,11 @@ def plan(
         ...,
         help="Video concept describing genre, vibe, mood, and purpose",
     ),
-    tracks: int = typer.Option(
-        15,
-        "--tracks",
-        "-t",
-        help="Approximate track count (duration is the real target)",
-    ),
     duration: int = typer.Option(
         60,
         "--duration",
         "-d",
         help="Target total duration in minutes",
-    ),
-    budget: float = typer.Option(
-        5.00,
-        "--budget",
-        "-b",
-        help="Maximum budget in USD",
     ),
     model: str = typer.Option(
         None,
@@ -332,7 +315,6 @@ def plan(
         plan = generate_session_plan(
             concept=concept,
             candidates=candidates,
-            track_count=tracks,
             target_duration_minutes=duration,
             model=model,
         )
@@ -393,10 +375,9 @@ def models():
     table.add_column("Notes")
 
     models_list = [
-        ("anthropic/claude-sonnet-4.5", "Anthropic", "Fast, reliable, great reasoning"),
-        ("anthropic/claude-haiku-4.5", "Anthropic", "Fastest, cheapest Anthropic option"),
-        ("openai/gpt-4o", "OpenAI", "Latest GPT, excellent structured output"),
-        ("google/gemini-2.0-flash-exp", "Google", "Fast, good value"),
+        ("anthropic/claude-opus-4.5", "Anthropic", "Expensive, reliable, great reasoning"),
+        ("openai/gpt-5.1", "OpenAI", "Latest GPT, excellent structured output"),
+        ("google/gemini-3-pro-preview", "Google", "Fast, good value"),
     ]
 
     for model_id, provider, notes in models_list:
@@ -435,7 +416,7 @@ def providers():
     console.print()
     console.print(
         "The Curator agent automatically selects the best provider for each track "
-        "based on your concept and budget."
+        "based on your concept."
     )
 
 
@@ -694,86 +675,6 @@ def compose(
         f"{r2_info}\n\n"
         f"[dim]Ready for manual upload to YouTube Studio[/dim]",
         title="Complete",
-    ))
-
-
-@app.command()
-def repair(
-    session_id: str = typer.Argument(
-        ...,
-        help="Session ID to repair (e.g., session_20231125_123456)",
-    ),
-    slots: str = typer.Option(
-        ...,
-        "--slots",
-        "-s",
-        help="Comma-separated slot numbers to regenerate (e.g., '8,12')",
-    ),
-    skip_upload: bool = typer.Option(
-        False,
-        "--skip-upload",
-        help="Don't upload regenerated tracks to R2 library",
-    ),
-):
-    """
-    Repair a session by regenerating specific failed slots.
-
-    Downloads the session metadata from R2, regenerates the specified
-    slots, uploads the new tracks to the library, and updates the
-    session metadata.
-
-    Example:
-        coolio repair session_20231130_161807 --slots 8,12
-        coolio repair session_20231130_161807 -s "8, 12, 15"
-    """
-    from pathlib import Path
-
-    # Parse slot numbers
-    try:
-        slot_numbers = [int(s.strip()) for s in slots.split(",") if s.strip()]
-    except ValueError:
-        console.print("[red]Invalid slot format. Use comma-separated numbers (e.g., '8,12')[/red]")
-        raise typer.Exit(1)
-
-    if not slot_numbers:
-        console.print("[red]No slot numbers provided[/red]")
-        raise typer.Exit(1)
-
-    console.print(Panel(
-        f"[bold]Session:[/bold] {session_id}\n"
-        f"[bold]Slots to repair:[/bold] {slot_numbers}\n"
-        f"[bold]Upload to R2:[/bold] {not skip_upload}",
-        title="Session Repair"
-    ))
-    console.print()
-
-    try:
-        generator = MusicGenerator(upload_to_r2=not skip_upload)
-        results = generator.repair_session(
-            session_id=session_id,
-            slot_numbers=slot_numbers,
-        )
-    except ValueError as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
-    except Exception as e:
-        console.print(f"[red]Repair failed: {e}[/red]")
-        raise typer.Exit(1)
-
-    # Summary
-    succeeded = results.get("succeeded", [])
-    failed = results.get("failed", [])
-
-    status = "[green]complete[/green]" if not failed else "[yellow]partial[/yellow]"
-
-    console.print()
-    console.print(Panel(
-        f"Repair {status}!\n\n"
-        f"Session: {session_id}\n"
-        f"Succeeded: {len(succeeded)} slots {succeeded if succeeded else ''}\n"
-        f"Failed: {len(failed)} slots {[f['order'] for f in failed] if failed else ''}\n"
-        f"Cost: ${results.get('cost', 0):.2f}",
-        title="Repair Results",
     ))
 
 

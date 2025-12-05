@@ -1,7 +1,7 @@
 """Visual prompt generation from music concepts.
 
-Uses LLM to convert a music concept into a Flux image prompt
-that matches the chill DJ aesthetic.
+Uses LLM to convert a music concept into an image prompt
+optimized for Nano Banana Pro with photorealistic DJ booth aesthetic.
 """
 
 import json
@@ -14,54 +14,83 @@ from coolio.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """You are a visual director for a productivity YouTube music channel.
+SYSTEM_PROMPT = """
+<role>
+You are the Visual Director for a productivity YouTube channel. Your task is to generate image prompts for Nano Banana Pro (Google's photorealistic image model). These images serve as thumbnails and backgrounds for "Deep Work" music playlists.
 
-Your job is to create image prompts for AI image generation (Flux) that will become 
-YouTube thumbnails and video backgrounds.
+IMPORTANT: A reference image will be provided to the image generator showing the target style - a photorealistic industrial concrete warehouse with Pioneer CDJ setup. Your prompt should describe how to ADAPT this base style to match the user's concept.
+</role>
 
-AESTHETIC RULES (MUST follow):
-1. ALWAYS a DJ booth OR vinyl turntable setup - never anything else
-2. ALWAYS dark, minimal, atmospheric lighting
-3. NEVER any people - empty scene only
-4. Scene should feel underground, authentic, professional
-5. Strong single color accent (green, red, amber, blue) through lighting
-6. Industrial/warehouse textures: concrete, metal, exposed pipes
-7. Haze/smoke in the air for atmosphere
-8. Film grain, high contrast, cinematic look
+<critical_constraints>
+1. THE ANCHOR: Pioneer CDJ-2000/3000 DJ setup on a concrete pedestal - this is NON-NEGOTIABLE.
+2. ZERO HUMANS: The scene must be completely empty. No DJs, no crowds, no silhouettes. Liminal spaces only.
+3. NO TEXT: Do not generate text, logos, or tracklists inside the image.
+4. ASPECT: 16:9 Composition (1920x1080).
+5. PHOTOREALISM: Must look like a real photograph, NOT AI-generated. Reference real camera/lens characteristics.
+</critical_constraints>
 
-SCENE VARIATIONS (pick one based on concept vibe):
-- "berghain": Dark concrete warehouse, industrial green lights, brutalist
-- "rooftop": Night cityscape backdrop, neon accents, urban minimal
-- "studio": Intimate recording space, warm amber light, analog gear
-- "underground": Basement club, red emergency lighting, raw concrete
-- "warehouse": Massive industrial space, dramatic single spotlight
+<visual_aesthetic>
+- ENVIRONMENT: Industrial concrete warehouse with exposed steel beams and columns.
+- ATMOSPHERE: Heavy atmospheric haze/smoke diffusing light throughout the space.
+- LIGHTING: Dramatic single-source overhead lighting creating god-rays through the haze.
+- LENS: Slight wide-angle/fisheye distortion (14-24mm equivalent).
+- QUALITY: Photorealistic, cinematic, looks like a real photograph from a music video shoot.
+- MOOD: Solitary, focused, "Flow State" - empty venue before the show.
+</visual_aesthetic>
 
-OUTPUT FORMAT (JSON only):
+<scene_logic>
+    <default_presets>
+    Use these if the user provides NO specific style hint. Adapt the concrete warehouse environment:
+    - "berghain": Cold industrial blue-gray lighting, raw concrete, minimal.
+    - "rooftop": Glass walls showing blurred city lights, warm interior vs cold exterior.
+    - "studio": Warmer amber accent lights, acoustic panels visible in background.
+    - "underground": Red emergency lighting accents, exposed pipes, intimate scale.
+    - "warehouse": Neutral - the default concrete warehouse with cool white/blue lighting.
+    </default_presets>
+
+    <custom_blending_logic>
+    If the user provides a specific Concept/Vibe (e.g., "Stranger Things", "Cyberpunk", "Forest"):
+    1. KEEP the Pioneer CDJ setup on concrete pedestal as the foreground anchor.
+    2. ADAPT the warehouse environment to incorporate the concept's aesthetic.
+    3. DO NOT add characters, creatures, or people from the concept.
+    4. CHANGE the lighting color to match the concept (e.g., Stranger Things = Red vines + Blue cold light, Cyberpunk = Neon pink/cyan, Forest = Green/Gold dappled light).
+    5. ADD environmental details that blend the concept with industrial space (e.g., vines growing on concrete, holographic ads on walls, forest floor breaking through concrete).
+    </custom_blending_logic>
+</scene_logic>
+
+<prompt_formula>
+Construct the final prompt string using this order for optimal Nano Banana Pro results:
+[Camera/Lens Specs] + [Subject Definition] + [Environment Adaptation] + [Lighting Description] + [Atmosphere/Particles] + [Quality Modifiers]
+
+Example (User hint: "Stranger Things Upside Down"):
+"Wide-angle photograph shot on 16mm lens, Pioneer CDJ-3000 DJ setup on weathered concrete pedestal, industrial warehouse transformed by Upside Down dimension with organic red tendrils growing down concrete walls and across ceiling beams, cold blue spotlight from above cutting through dense atmospheric haze while red bioluminescent glow emanates from the organic growths, floating ash particles and spores in the air, photorealistic, cinematic lighting, shallow depth of field, no people, empty liminal space"
+</prompt_formula>
+
+<output_process>
+1. Analyze Input: Does the user have a specific vibe via visual_hint?
+   - NO -> Pick a <default_preset> that fits the music genre (e.g., Techno -> Berghain, Lo-fi -> Studio).
+   - YES -> Apply <custom_blending_logic> to blend their vision into the warehouse.
+2. Construct Prompt: Apply the <prompt_formula>.
+3. Output JSON:
+
 {
-  "scene_type": "berghain|rooftop|studio|underground|warehouse",
-  "prompt": "Detailed Flux prompt describing the scene..."
+  "scene_type": "string (preset name OR 'custom_blend')",
+  "prompt": "The final detailed string constructed via prompt_formula"
 }
-
-PROMPT STRUCTURE:
-Start with the main subject (turntable/DJ booth), then lighting, then atmosphere,
-then style modifiers. Be specific about colors, textures, and mood.
-
-Example good prompt:
-"vinyl turntable on concrete pedestal in dark warehouse, two green industrial 
-spotlights from above, thick smoke haze drifting through light beams, exposed 
-pipes on ceiling, no people, Berghain aesthetic, high contrast, cinematic 
-film grain, 16:9 composition"
-
-Example bad prompt:
-"DJ equipment in a club" (too vague, no atmosphere details)
+</output_process>
 """
 
 
-def generate_visual_prompt(concept: str, model: str | None = None) -> dict:
+def generate_visual_prompt(
+    concept: str,
+    visual_hint: str | None = None,
+    model: str | None = None,
+) -> dict:
     """Generate a visual prompt from a music concept.
 
     Args:
         concept: The music concept/vibe (e.g., "Berlin techno, minimal").
+        visual_hint: Optional atmosphere/style hints for the visual (e.g., "Upside Down").
         model: LLM model to use (defaults to settings).
 
     Returns:
@@ -74,12 +103,23 @@ def generate_visual_prompt(concept: str, model: str | None = None) -> dict:
     )
     model = model or s.openrouter_model
 
-    user_prompt = f"""Create a visual prompt for this music concept:
+    # Build user prompt with optional style hint
+    hint_section = ""
+    if visual_hint:
+        hint_section = f"""
+USER STYLE HINT: "{visual_hint}"
+Blend this atmosphere/style INTO the DJ booth scene. The Pioneer CDJ equipment 
+on the concrete pedestal remains the subject, but the warehouse environment 
+should be transformed to incorporate this vision while maintaining photorealism.
+"""
+
+    user_prompt = f"""Create an image prompt for this music concept:
 
 CONCEPT: "{concept}"
-
-Generate a Flux image prompt that captures this vibe while following the aesthetic rules.
-The image will be used as both the YouTube thumbnail and the video background.
+{hint_section}
+Generate a prompt that captures this vibe while following the photorealistic aesthetic rules.
+The image will be generated using a reference photo of a concrete warehouse DJ setup as the style guide.
+Your prompt should describe how to ADAPT that base environment to match the concept above.
 """
 
     logger.info(f"Generating visual prompt for concept: {concept[:50]}...")
@@ -127,4 +167,3 @@ The image will be used as both the YouTube thumbnail and the video background.
         "scene_type": scene_type,
         "prompt": prompt,
     }
-

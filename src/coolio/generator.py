@@ -24,6 +24,35 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
+
+class SessionAbortError(Exception):
+    """Raised when a session must abort due to a track failure.
+
+    Carries context about what failed and what was already completed,
+    allowing callers to understand the state of the session.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        failed_slot: int,
+        total_slots: int,
+        completed_tracks: int = 0,
+        cost_spent: float = 0.0,
+    ) -> None:
+        super().__init__(message)
+        self.failed_slot = failed_slot
+        self.total_slots = total_slots
+        self.completed_tracks = completed_tracks
+        self.cost_spent = cost_spent
+
+    def __str__(self) -> str:
+        return (
+            f"{self.args[0]} "
+            f"(slot {self.failed_slot}/{self.total_slots}, "
+            f"{self.completed_tracks} completed, ${self.cost_spent:.2f} spent)"
+        )
+
 # ElevenLabs advertises 5-minute generations, but anything well past 3 minutes
 # currently dies with a RemoteProtocolError (server disconnect) which burns credits.
 # To keep automation stable, route longer durations to Stable Audio instead.
@@ -181,9 +210,7 @@ class MusicGenerator:
         # ElevenLabs: no retry (burns credits on each attempt)
         # Stable Audio: retry OK (flat rate per track)
         if provider_name == "elevenlabs":
-            elevenlabs_provider = provider
-            assert isinstance(elevenlabs_provider, ElevenLabsProvider)
-            return elevenlabs_provider.generate(
+            return provider.generate(
                 prompt=slot.prompt or f"{slot.role} track",
                 duration_ms=slot.duration_ms,
                 output_dir=session_dir,
@@ -193,7 +220,6 @@ class MusicGenerator:
                 role=slot.role,
                 bpm=slot.bpm_target,
                 energy=slot.energy,
-                use_composition_plan=True,
             )
         else:
             # Stable Audio can retry safely
@@ -275,21 +301,28 @@ class MusicGenerator:
         self,
         slot: TrackSlot,
         session_dir: Path,
-        genre: str,
-    ) -> GeneratedTrack | None:
+        fallback_genre: str,
+    ) -> GeneratedTrack:
         """Download a library track and update its usage metadata.
 
         Args:
             slot: Track slot with source="library" and track_id set.
             session_dir: Local directory to save the downloaded track.
-            genre: Genre folder in R2.
+            fallback_genre: Genre folder to use if slot.track_genre is not set.
 
         Returns:
-            GeneratedTrack wrapping the downloaded file, or None on failure.
+            GeneratedTrack wrapping the downloaded file.
+
+        Raises:
+            ValueError: If track_id is missing or track not found in R2.
         """
         if not slot.track_id:
-            logger.error(f"Slot {slot.order} marked for reuse but missing track_id")
-            return None
+            raise ValueError(
+                f"Slot {slot.order} marked for reuse but missing track_id"
+            )
+
+        # Use the track's stored genre if provided, otherwise fall back to session genre
+        genre = slot.track_genre or fallback_genre
 
         r2 = self._get_r2()
         track_key = f"library/tracks/{genre}/{slot.track_id}.mp3"
@@ -299,43 +332,40 @@ class MusicGenerator:
         local_audio_path = session_dir / f"{filename_base}.mp3"
         local_metadata_path = session_dir / f"{filename_base}.json"
 
-        try:
-            # 1. Check track exists
-            if not r2.exists(track_key):
-                logger.error(f"Reused track not found in R2: {track_key}")
-                return None
-
-            # 2. Download audio
-            r2.download_file(track_key, local_audio_path)
-
-            # 3. Read and update usage metadata in R2
-            data = r2.read_json(metadata_key)
-            meta = TrackMetadata.from_dict(data)
-            meta.mark_used()
-            r2.upload_json(meta.to_dict(), metadata_key)
-            logger.info(f"Updated usage stats for track {slot.track_id}")
-
-            # 4. Save a local copy of metadata for session records
-            with open(local_metadata_path, "w") as f:
-                json.dump(meta.to_dict(), f, indent=2)
-
-            # 5. Return GeneratedTrack wrapper
-            return GeneratedTrack(
-                order=slot.order,
-                title=meta.title,
-                role=slot.role,
-                prompt=meta.prompt_hash,  # Original prompt not stored, use hash
-                duration_ms=meta.duration_ms,
-                audio_path=local_audio_path,
-                metadata_path=local_metadata_path,
-                provider=meta.provider,
-                bpm=meta.bpm,
-                energy=meta.energy,
+        # 1. Check track exists
+        if not r2.exists(track_key):
+            raise ValueError(
+                f"Library track not found in R2: {track_key} "
+                f"(track_id={slot.track_id}, genre={genre})"
             )
 
-        except Exception as e:
-            logger.error(f"Failed to process library track {slot.track_id}: {e}")
-            return None
+        # 2. Download audio
+        r2.download_file(track_key, local_audio_path)
+
+        # 3. Read and update usage metadata in R2
+        data = r2.read_json(metadata_key)
+        meta = TrackMetadata.from_dict(data)
+        meta.mark_used()
+        r2.upload_json(meta.to_dict(), metadata_key)
+        logger.info(f"Updated usage stats for track {slot.track_id}")
+
+        # 4. Save a local copy of metadata for session records
+        with open(local_metadata_path, "w") as f:
+            json.dump(meta.to_dict(), f, indent=2)
+
+        # 5. Return GeneratedTrack wrapper
+        return GeneratedTrack(
+            order=slot.order,
+            title=meta.title,
+            role=slot.role,
+            prompt=meta.prompt_hash,  # Original prompt not stored, use hash
+            duration_ms=meta.duration_ms,
+            audio_path=local_audio_path,
+            metadata_path=local_metadata_path,
+            provider=meta.provider,
+            bpm=meta.bpm,
+            energy=meta.energy,
+        )
 
     def execute_plan(
         self,
@@ -377,11 +407,8 @@ class MusicGenerator:
                     # Reuse from library
                     print(f"REUSING '{slot.title}' ({slot.track_id})")
                     track = self._process_library_slot(slot, session_dir, plan.genre)
-                    if track:
-                        final_tracks.append(track)
-                        reused_count += 1
-                    else:
-                        print("  FAILED to reuse track. Skipping slot.")
+                    final_tracks.append(track)
+                    reused_count += 1
 
                 elif slot.source == "generate":
                     # Generate new track
@@ -400,11 +427,19 @@ class MusicGenerator:
                         uploaded_metadata.append(meta)
 
                 else:
-                    print(f"Unknown source: {slot.source}")
+                    raise ValueError(f"Unknown source: {slot.source}")
 
             except Exception as e:
-                print(f"  ERROR processing slot {slot.order}: {e}")
-                logger.exception("Slot processing error")
+                # Hard fail: abort the entire session
+                print(f"\n  FATAL: {e}")
+                logger.exception("Session aborted due to track failure")
+                raise SessionAbortError(
+                    message=str(e),
+                    failed_slot=slot.order,
+                    total_slots=len(plan.slots),
+                    completed_tracks=len(final_tracks),
+                    cost_spent=actual_cost,
+                )
 
         # Build session metadata with track references (not copies)
         track_references = []
