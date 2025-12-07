@@ -68,18 +68,9 @@ You will be provided with a "Concept" or "Vibe" (e.g., "Stranger Things inspired
 2. THE VIBE: A short paragraph describing the atmosphere (using semantic keywords).
 3. THE TRACKLIST:
    - Format: `[00:00] Track Name`
-   - If no tracklist is provided, generate a placeholder: `[00:00] Track 1...`
 4. THE CTA: "Subscribe for weekly deep work mixes."
 5. HASHTAGS: #FocusMusic #Genre #[Vibe]
 </description_architecture>
-
-<processing_step>
-Before outputting JSON, perform this logic inside <thinking> tags:
-1.  **Sanitize:** Check input for trademarks. Create a list of "Safe Replacement Keywords".
-2.  **Target Avatar:** Who is this for? (Coders? Writers? Math students?).
-3.  **Keyword Cloud:** Generate 5 Broad, 5 Niche, and 5 Activity keywords.
-4.  **Draft Titles:** Create 3 variations, select the best one based on the <title_formula>.
-</processing_step>
 
 <output_schema>
 Return JSON ONLY.

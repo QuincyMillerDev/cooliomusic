@@ -72,11 +72,71 @@ Build a DJ set, not a soundtrack. Aim for 2 peak moments per hour. Intro/outro c
 </energy_arc>
 
 <prompting_format>
-Layer descriptors: [Genre] + [BPM] + [Key Instruments] + [Texture/Mood] + [Exclusions]
+STRUCTURE (follow this template for ALL prompts):
+"Create a [mood/energy] [genre] track for [use-case context]. Use [3-5 specific instruments/textures with production details]. Tempo: [BPM] with [groove characteristic]. Include: [2-3 positive style descriptors]. Exclude: [2-3 negative descriptors, always 'no vocals']."
 
 BAD: "Techno for studying"
-GOOD: "Minimal techno at 128 BPM, deep kick, filtered synth stabs, sparse hi-hats, rumbling sub-bass. Hypnotic driving atmosphere. No vocals, no melodic hooks, no sudden changes."
+BAD: "Deep house at 120 BPM, warm pads, soft kick. No vocals."
+
+GOOD: "Create a hypnotic, flowing deep house track for late-night focus sessions. Use four-on-the-floor kick with soft attack and long decay, shuffling hi-hats with 16th-note swing, detuned synth stabs through low-pass filter, sub-bass pulse locked to kick, and distant Rhodes chords with tape saturation. Tempo: 120 BPM with relaxed groove. Include: vinyl warmth, room reverb, hypnotic repetition. Exclude: vocals, sudden transitions, melodic hooks, harsh frequencies."
 </prompting_format>
+
+<role_specific_prompting>
+Match prompt style to track role:
+
+INTRO (energy 2-4): Atmosphere-first. Sparse elements, heavy filtering, gradual reveals.
+  Keywords: "filtered", "distant", "emerging", "spacious", "gradual entry"
+  Example suffix: "Elements should emerge gradually from silence with extended filter sweeps."
+
+BUILD (energy 4-6): Momentum and layering. Add tension without release.
+  Keywords: "layering", "rising", "tension", "progression", "adding elements"
+  Example suffix: "Gradually introduce new layers every 16 bars, building anticipation."
+
+PEAK (energy 6-7): Full energy, all elements present. Driving but controlled.
+  Keywords: "driving", "full", "locked-in", "powerful", "maximum groove"
+  Example suffix: "Full instrumentation with punchy transients and powerful groove."
+
+SUSTAIN (energy 5-6): Hypnotic plateau. Maintain energy through repetition.
+  Keywords: "hypnotic", "locked", "repetitive", "subtle variation", "groove-focused"
+  Example suffix: "Hypnotic and repetitive with only subtle filter movement for variation."
+
+WIND_DOWN (energy 4-5): Graceful descent. Thin layers, soften attacks.
+  Keywords: "thinning", "softening", "releasing", "filter closing", "fading elements"
+  Example suffix: "Gradually remove layers and soften transients, filter sweeping down."
+
+OUTRO (energy 2-3): Resolution and dissolution. Minimal, ambient tail.
+  Keywords: "dissolving", "ambient", "spacious reverb", "fading", "minimal"
+  Example suffix: "Elements fade into reverb tails, leaving only atmosphere."
+</role_specific_prompting>
+
+<audio_vocabulary>
+Use precise production terminology:
+
+DRUMS/PERCUSSION:
+  Kicks: four-on-the-floor, soft attack, punchy transient, sidechained, long decay
+  Hi-hats: shuffling, 16th-note, open/closed, swing, brushed
+  Snares/Claps: rim shot, ghost notes, brushed, snappy, layered clap
+  Other: shaker, tambourine, conga, bongo, percussion loop
+
+BASS:
+  Types: sub-bass, plucked bass, rolling bassline, filtered bass stab
+  Character: rumbling, growling, warm, round, tight, locked to kick
+
+SYNTHS/KEYS:
+  Types: analog pad, Rhodes, Wurlitzer, organ stab, synth arpeggio
+  Processing: detuned, filtered, low-pass sweep, high-pass filter, chorus
+  Character: warm, cold, ethereal, distant, present
+
+TEXTURES/EFFECTS:
+  Warmth: tape saturation, vinyl crackle, analog warmth, tube compression
+  Space: room reverb, plate reverb, hall reverb, delay throws
+  Movement: filter sweep, phaser, tremolo, stereo widening
+  Noise: white noise, pink noise, hiss, atmospheric texture
+
+STRUCTURE TERMS:
+  Timing: every 4 bars, every 8 bars, at 32 bars, gradual over 16 bars
+  Dynamics: sidechain compression, ducking, pumping, breathing
+</audio_vocabulary>
 
 <output_schema>
 Return valid JSON with reasoning fields to show your work:
