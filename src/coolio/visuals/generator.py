@@ -1,8 +1,9 @@
 """Nano Banana Pro image generation for YouTube thumbnails.
 
-Generates 1920x1080 images via OpenRouter's Nano Banana Pro model
-(google/gemini-3-pro-image-preview) using a photorealistic reference
-image for consistent style.
+Transforms a reference DJ venue photo via OpenRouter's Nano Banana Pro model
+(google/gemini-3-pro-image-preview). The model removes people from the reference
+image and applies hue/atmosphere modifications while preserving the exact
+venue composition.
 """
 
 import base64
@@ -24,7 +25,7 @@ REFERENCE_IMAGE_PATH = (
     / "coolio"
     / "assets"
     / "images"
-    / "cooliomusicreferencephoto.png"
+    / "cooliomusicreferencephoto.jpg"
 )
 
 
@@ -40,7 +41,7 @@ def _load_reference_image() -> str:
     # Handle both installed package and dev paths
     paths_to_try = [
         REFERENCE_IMAGE_PATH,
-        Path(__file__).parent.parent / "assets" / "images" / "cooliomusicreferencephoto.png",
+        Path(__file__).parent.parent / "assets" / "images" / "cooliomusicreferencephoto.jpg",
     ]
 
     for path in paths_to_try:
@@ -115,22 +116,24 @@ class VisualGenerator:
         start_time = time.time()
 
         # Build multimodal message with reference image + prompt
-        generation_prompt = f"""Use this reference image as the STYLE GUIDE for composition, lighting, and photorealistic quality.
+        # We ask the model to TRANSFORM the reference image, not generate from scratch
+        generation_prompt = f"""TRANSFORM this exact image with these modifications:
 
-STYLE REQUIREMENTS from reference:
-- Photorealistic quality (looks like a real photograph, not AI-generated)
-- Industrial concrete warehouse environment with exposed beams
-- Pioneer CDJ-2000/3000 DJ setup on concrete pedestal
-- Atmospheric haze/smoke diffusing light
-- Dramatic single-source overhead lighting
-- Slight fisheye/wide-angle lens distortion
-- No people, empty liminal space
-- 16:9 aspect ratio ({self.width}x{self.height})
+KEEP:
+- The DJ equipment (Pioneer CDJs, mixer) position and setup on the wooden table
+- The stage lights and fixtures on both sides
+- The overall composition and camera angle (behind the DJ booth looking out)
+- The atmospheric haze and depth
 
-NOW GENERATE THIS SCENE:
-{prompt}
+REMOVE:
+- All people - the DJ silhouette in the foreground and the entire crowd
+- Replace the crowd area with empty venue space (dark floor, continuing haze)
+- The space should feel empty and liminal, like the venue before/after the show
 
-Keep the photorealistic DJ booth anchor but adapt the environment, lighting color, and atmosphere to match the prompt above."""
+MODIFY:
+- {prompt}
+
+CRITICAL: Output a photorealistic image that looks like THIS EXACT venue photographed when empty. Same camera position, same equipment, same architecture - just no people and with the color/atmosphere changes described above. Maintain 16:9 aspect ratio ({self.width}x{self.height})."""
 
         # IMPORTANT: modalities=["image", "text"] is REQUIRED for image generation
         response = client.chat.completions.create(
@@ -142,7 +145,7 @@ Keep the photorealistic DJ booth anchor but adapt the environment, lighting colo
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/png;base64,{ref_b64}",
+                                "url": f"data:image/jpeg;base64,{ref_b64}",
                             },
                         },
                         {

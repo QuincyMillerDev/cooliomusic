@@ -17,33 +17,19 @@ from coolio.models import SessionPlan, TrackSlot
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """
-<system_role>
-You are the Lead Curator for a productivity music channel. Your directive is to build high-flow, cost-efficient playlists.
-You operate on "Cost-First, Creative-Second" logic.
-</system_role>
+SYSTEM_PROMPT_TEMPLATE = """
+<dj_identity>
+You are a DJ building a set for a productivity music channel. You understand tempo, energy, and flow dynamics intuitively. Trust your instincts on BPM choices - dramatic shifts can be as effective as smooth transitions.
 
-<priority_hierarchy>
-1. HIT DURATION TARGET (±5 min) - Non-negotiable
-2. MAXIMIZE LIBRARY REUSE (Save Money) - Library tracks are FREE
-3. ENSURE FLOW (BPM ±5, Energy arc)
-4. CREATIVE VIBE (Naming/Prompts) - Last priority
-</priority_hierarchy>
+PRIORITIES (in order):
+1. Hit duration target (±5 min)
+2. Maximize library reuse (FREE tracks save money)
+3. Craft compelling flow - you own the tempo/energy journey
+</dj_identity>
 
-<library_anchor_protocol>
-You are NOT choosing WHETHER to use library tracks. You are determining WHERE to place them.
-
-IF CANDIDATES EXIST:
-1. Force-fit at least 30-50% of available candidates.
-2. "Good Enough" Rule:
-   - Genre: If it's electronic/instrumental, it probably fits.
-   - BPM: ±10 BPM is acceptable (DJs pitch-shift all the time).
-   - Energy: ±2 Energy is acceptable.
-3. ONLY reject a candidate if it is a "Vibe Killer" (e.g., Heavy Metal in a Lofi set).
-4. Treat accepted library tracks as ANCHORS. Generate new tracks to BRIDGE THE GAPS between them.
-
-You MUST document your library decisions in the "reasoning" field.
-</library_anchor_protocol>
+<library_reuse>
+Use 30-50% of available library tracks as anchors. Only reject if it's a true vibe killer. Generate new tracks to bridge gaps between anchors. Document decisions in "reasoning.library_analysis".
+</library_reuse>
 
 <naming_firewall>
 BANNED - These will get your output rejected:
@@ -79,51 +65,11 @@ REQUIRED AESTHETIC:
 - Avoid: all_lowercase_underscore for every track (lazy AI pattern)
 </naming_firewall>
 
-<provider_rules>
-ELEVENLABS (~$0.006/sec, ~$1.20 for 3min) - PRIMARY PROVIDER:
-- Duration: 120-300 seconds
-- Use for: 70% of new generation (all main tracks: build, peak, sustain)
-- RESTRICTIONS: No brand names (Moog, Roland, Korg), no artist names
+{provider_rules}
 
-STABLE_AUDIO ($0.20/track flat) - TEXTURE ONLY:
-- Duration: 120-190 seconds (HARD LIMIT - cannot exceed 190s)
-- Use for: 30% of new generation (intros, outros, ambient transitions)
-- Best for: atmospheric textures, ambient pads, transitional moments
-
-DURATION VARIETY (Critical):
-- Do NOT make all tracks 3:00. Mix lengths: 2:15, 2:40, 2:55, 3:10
-- Intros/outros: shorter (120-150s) via stable_audio
-- Peaks/sustains: can be longer (180-240s) via elevenlabs
-</provider_rules>
-
-<energy_protocol>
-You are a REAL DJ building a set, not a soundtrack composer.
-
-ENERGY RULES:
-1. MAINTAIN FLOOR ENERGY: Keep energy relatively constant (range of 3-4 points max)
-   - Bad: 3 → 7 → 2 → 6 → 1 (wild swings kill the vibe)
-   - Good: 5 → 6 → 5 → 7 → 6 → 5 (controlled flow)
-
-2. MINIMUM 2 PEAKS: Every 60-min set needs at least 2 peak moments
-   - Peaks are energy 6-7, not necessarily the maximum possible
-   - Peaks should be at ~25% and ~70% through the set
-
-3. VALLEYS ARE SUBTLE: Wind-downs drop 1-2 energy points, not to zero
-   - A "valley" is energy 4-5, not energy 1-2
-   - Maintain momentum even during cool-down sections
-
-4. INTRO/OUTRO EXCEPTION: Only intro (track 1) and outro (last 1-2 tracks) 
-   can have lower energy (3-4). Everything else stays 5-7.
-
-ENERGY ARC TEMPLATE for 60-min set:
-- Tracks 1-2: Energy 4-5 (warm up)
-- Tracks 3-8: Energy 5-6 (cruising)
-- Tracks 9-11: Energy 6-7 (first peak)
-- Tracks 12-15: Energy 5-6 (sustain)
-- Tracks 16-18: Energy 6-7 (second peak)
-- Tracks 19-20: Energy 5-4 (wind down)
-- Track 21+: Energy 3-4 (outro)
-</energy_protocol>
+<energy_arc>
+Build a DJ set, not a soundtrack. Aim for 2 peak moments per hour. Intro/outro can be lower energy (3-4), but maintain momentum in between (5-7 range). Avoid wild swings - transitions should feel intentional.
+</energy_arc>
 
 <prompting_format>
 Layer descriptors: [Genre] + [BPM] + [Key Instruments] + [Texture/Mood] + [Exclusions]
@@ -135,19 +81,19 @@ GOOD: "Minimal techno at 128 BPM, deep kick, filtered synth stabs, sparse hi-hat
 <output_schema>
 Return valid JSON with reasoning fields to show your work:
 
-{
-  "reasoning": {
+{{
+  "reasoning": {{
     "library_analysis": [
-      {"track_id": "abc123", "decision": "KEEP", "placement": "track 3", "rationale": "BPM 118 fits, energy 5 works for build"},
-      {"track_id": "def456", "decision": "REJECT", "rationale": "Genre mismatch - ambient doesn't fit synthfunk"}
+      {{"track_id": "abc123", "decision": "KEEP", "placement": "track 3", "rationale": "BPM 118 fits, energy 5 works for build"}},
+      {{"track_id": "def456", "decision": "REJECT", "rationale": "Genre mismatch - ambient doesn't fit synthfunk"}}
     ],
     "duration_math": "60 min target - 8.5 min library = 51.5 min to generate = ~17 new tracks",
     "name_audit": "Checked all titles against banned words - clear"
-  },
+  }},
   "genre": "string",
   "bpm_range": [min, max],
   "slots": [
-    {
+    {{
       "order": 1,
       "role": "intro|build|peak|sustain|wind_down|outro",
       "duration_ms": 145000,
@@ -157,8 +103,8 @@ Return valid JSON with reasoning fields to show your work:
       "track_id": "abc123",
       "track_genre": "techno",
       "title": "Existing Track Title"
-    },
-    {
+    }},
+    {{
       "order": 2,
       "role": "build",
       "duration_ms": 165000,
@@ -168,11 +114,44 @@ Return valid JSON with reasoning fields to show your work:
       "title": "new track name",
       "provider": "stable_audio",
       "prompt": "Detailed layered prompt..."
-    }
+    }}
   ]
-}
+}}
 </output_schema>
 """
+
+
+# Provider-specific rules for single-provider mode
+PROVIDER_RULES_ELEVENLABS = """<provider_rules>
+PROVIDER: ELEVENLABS ONLY (~$0.006/sec, ~$1.20 for 3min)
+
+All new tracks MUST use "elevenlabs" as provider. Do NOT use stable_audio.
+
+DURATION LIMITS:
+- Minimum: 120 seconds (2 minutes)
+- Maximum: 300 seconds (5 minutes)
+- RESTRICTIONS: No brand names (Moog, Roland, Korg), no artist names
+
+DURATION VARIETY (Critical):
+- Do NOT make all tracks 3:00. Mix lengths: 2:15, 2:40, 2:55, 3:10, 4:00
+- Intros/outros: shorter (120-150s)
+- Peaks/sustains: can be longer (180-240s)
+</provider_rules>"""
+
+PROVIDER_RULES_STABLE_AUDIO = """<provider_rules>
+PROVIDER: STABLE_AUDIO ONLY ($0.20/track flat rate)
+
+All new tracks MUST use "stable_audio" as provider. Do NOT use elevenlabs.
+
+DURATION LIMITS:
+- Minimum: 120 seconds (2 minutes)
+- Maximum: 190 seconds (3:10) - HARD LIMIT, cannot exceed
+- Best for: atmospheric textures, ambient pads, electronic music
+
+DURATION VARIETY (Critical):
+- Do NOT make all tracks the same length. Mix: 2:00, 2:20, 2:40, 3:00, 3:10
+- Keep all tracks under 190 seconds
+</provider_rules>"""
 
 
 def _create_client() -> OpenAI:
@@ -189,6 +168,7 @@ def generate_session_plan(
     candidates: list[TrackMetadata],
     target_duration_minutes: int = 60,
     model: str | None = None,
+    provider: str = "elevenlabs",
 ) -> SessionPlan:
     """Generate a session plan mixing library tracks and new generation.
 
@@ -203,6 +183,7 @@ def generate_session_plan(
         candidates: List of available tracks from the library.
         target_duration_minutes: Target total duration (primary constraint).
         model: LLM model to use.
+        provider: Audio provider to use for all new tracks.
 
     Returns:
         SessionPlan containing the complete tracklist with sources.
@@ -210,6 +191,19 @@ def generate_session_plan(
     client = _create_client()
     s = get_settings()
     model = model or s.openrouter_model
+
+    # Select provider-specific rules
+    if provider == "stable_audio":
+        provider_rules = PROVIDER_RULES_STABLE_AUDIO
+        max_duration_sec = 190
+        cost_info = "$0.20/track"
+    else:
+        provider_rules = PROVIDER_RULES_ELEVENLABS
+        max_duration_sec = 300
+        cost_info = "~$1.20/track"
+
+    # Build system prompt with provider-specific rules
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(provider_rules=provider_rules)
 
     # Format candidates for the prompt
     if candidates:
@@ -235,10 +229,11 @@ def generate_session_plan(
 
     user_prompt = f"""CONCEPT: "{concept}"
 TARGET DURATION: {target_duration_minutes} minutes
+PROVIDER: {provider} (use ONLY this provider for all new tracks)
 
 === STEP 1: LIBRARY ANCHORS (MANDATORY) ===
 You have {len(candidates)} library tracks available ({library_duration_min:.1f} min total).
-These are FREE. New generation costs $0.20-$1.20 per track.
+These are FREE. New generation costs {cost_info}.
 
 REQUIREMENT: Use at least {min_library_reuse} of these tracks as anchors.
 For each candidate, you MUST document in "reasoning.library_analysis":
@@ -250,11 +245,13 @@ LIBRARY CANDIDATES:
 
 === STEP 2: FILL THE GAPS ===
 After placing library anchors, generate new tracks to fill remaining time.
-- elevenlabs: ~$1.20/track, up to 300s (use for 70% - all main tracks: build, peak, sustain)
-- stable_audio: $0.20/track, max 190s (use for 30% - intros, outros, textures only)
+- Provider: {provider}
+- Cost: {cost_info}
+- Max duration per track: {max_duration_sec} seconds
 
 === STEP 3: VERIFY ===
 - Total duration must be {target_duration_minutes} min ±5
+- All new tracks must have "provider": "{provider}"
 - Show your math in "reasoning.duration_math"
 - Audit all new titles against banned words in "reasoning.name_audit"
 
@@ -267,7 +264,7 @@ Remember: Titles must NOT reference the concept. No "Neon", "Cyber", "Arcade", e
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.7,

@@ -11,7 +11,12 @@ from coolio.library.query import LibraryQuery
 from coolio.library.storage import R2Storage
 from coolio.models import SessionPlan
 from coolio.generator import MusicGenerator
-from coolio.visuals import VisualGenerator, generate_visual_prompt
+from coolio.visuals import (
+    KlingAIVideoGenerator,
+    VisualGenerator,
+    generate_video_motion_prompt,
+    generate_visual_prompt,
+)
 
 app = typer.Typer(
     name="coolio",
@@ -83,6 +88,12 @@ def generate(
         "-m",
         help="OpenRouter model to use (default: from settings)",
     ),
+    provider: str = typer.Option(
+        "elevenlabs",
+        "--provider",
+        "-p",
+        help="Audio provider: elevenlabs (default) or stable_audio",
+    ),
     exclude_days: int = typer.Option(
         7,
         "--exclude-days",
@@ -123,9 +134,17 @@ def generate(
     Example:
         coolio generate "Berlin techno, minimal, hypnotic focus"
         coolio generate "lofi hip hop for studying" --no-library
+        coolio generate "ambient focus music" --provider stable_audio
     """
+    # Validate provider
+    valid_providers = ["elevenlabs", "stable_audio"]
+    if provider not in valid_providers:
+        console.print(f"[red]Invalid provider '{provider}'. Choose from: {', '.join(valid_providers)}[/red]")
+        raise typer.Exit(1)
+
     console.print(Panel(
-        f"[bold]Concept:[/bold] {concept}",
+        f"[bold]Concept:[/bold] {concept}\n"
+        f"[bold]Provider:[/bold] {provider}",
         title="Coolio Music Generator"
     ))
     console.print()
@@ -151,6 +170,7 @@ def generate(
     # Step 2: Planning Session
     console.print("[bold cyan]Step 2:[/bold cyan] Planning session...")
     console.print(f"  Model: {model or get_settings().openrouter_model}")
+    console.print(f"  Provider: {provider}")
     console.print(f"  Target: {duration} minutes")
     console.print()
 
@@ -160,6 +180,7 @@ def generate(
             candidates=candidates,
             target_duration_minutes=duration,
             model=model,
+            provider=provider,
         )
     except Exception as e:
         console.print(f"[red]Error generating session plan: {e}[/red]")
@@ -178,7 +199,7 @@ def generate(
         console.print("  New tracks will be uploaded to R2 library.")
     console.print()
 
-    generator = MusicGenerator(upload_to_r2=not skip_upload)
+    generator = MusicGenerator(upload_to_r2=not skip_upload, provider_override=provider)
 
     try:
         session = generator.execute_plan(plan)
@@ -186,41 +207,66 @@ def generate(
         console.print(f"[red]Error executing plan: {e}[/red]")
         raise typer.Exit(1)
 
-    # Step 3.5: Generate Visual (unless --skip-visual)
+    # Step 3.5: Generate Visual Assets (unless --skip-visual)
     # Done AFTER audio so we have the real session_dir to save to
     visual_r2_key: str | None = None
     visual_prompt: str | None = None
+    clip_path: str | None = None
     if not skip_visual:
         console.print()
-        console.print("[bold cyan]Step 3.5:[/bold cyan] Generating visual thumbnail...")
+        console.print("[bold cyan]Step 3.5:[/bold cyan] Generating visual assets...")
         if visual_hint:
             console.print(f"  Hint: {visual_hint}")
         try:
-            # Generate visual prompt from concept
+            # Step 3.5a: Generate visual prompt from concept
             visual_data = generate_visual_prompt(concept, visual_hint=visual_hint, model=model)
             visual_prompt = str(visual_data["prompt"])
             scene_type = str(visual_data["scene_type"])
-            console.print(f"  Scene type: {scene_type}")
-            console.print(f"  Prompt: {visual_prompt[:60]}...")
+            console.print(f"  a) Scene type: {scene_type}")
+            console.print(f"     Prompt: {visual_prompt[:50]}...")
 
-            # Generate thumbnail image - save directly to session directory
+            # Step 3.5b: Generate thumbnail image
             visual_gen = VisualGenerator()
             thumbnail_path = visual_gen.generate(
                 prompt=visual_prompt,
                 session_id=session.session_id,
                 output_dir=session.session_dir,
             )
-            console.print(f"  Generated: {thumbnail_path}")
+            console.print(f"  b) Thumbnail: {thumbnail_path.name}")
 
-            # Upload to R2 (if not skipping uploads)
+            # Step 3.5c: Generate video motion prompt
+            console.print("  c) Generating video motion prompt...")
+            motion_data = generate_video_motion_prompt(
+                concept=concept,
+                image_prompt=visual_prompt,
+                model=model,
+            )
+            motion_prompt = str(motion_data["prompt"])
+            motion_type = str(motion_data["motion_type"])
+            console.print(f"     Motion type: {motion_type}")
+            console.print(f"     Prompt: {motion_prompt[:50]}...")
+
+            # Step 3.5d: Generate 10s looping video clip with Kling AI
+            console.print("  d) Creating 10s loop clip via Kling AI...")
+            video_gen = KlingAIVideoGenerator()
+            video_result = video_gen.generate(
+                image_path=thumbnail_path,
+                prompt=motion_prompt,
+                session_id=session.session_id,
+                output_dir=session.session_dir,
+            )
+            clip_path = str(video_result.output_path)
+            console.print(f"     Clip saved: {video_result.output_path.name}")
+
+            # Upload thumbnail to R2 (if not skipping uploads)
             if not skip_upload:
                 r2 = R2Storage()
                 visual_r2_key = r2.upload_image(thumbnail_path, session.session_id)
-                console.print(f"  Uploaded: {visual_r2_key}")
+                console.print(f"  e) Uploaded thumbnail: {visual_r2_key}")
 
         except Exception as e:
             console.print(f"  [yellow]Visual generation failed: {e}[/yellow]")
-            console.print("  [dim]Session audio is complete but thumbnail is missing.[/dim]")
+            console.print("  [dim]Session audio is complete but visuals may be incomplete.[/dim]")
     else:
         console.print()
         console.print("[bold cyan]Step 3.5:[/bold cyan] Skipping visual generation (--skip-visual)")
@@ -231,6 +277,8 @@ def generate(
         visual_info = f"\nThumbnail: {visual_r2_key}"
     elif visual_prompt:
         visual_info = "\nThumbnail: (generated locally)"
+    if clip_path:
+        visual_info += "\nVideo clip: ready for compose"
 
     console.print()
     console.print(Panel(
@@ -263,6 +311,12 @@ def plan(
         "-m",
         help="OpenRouter model to use",
     ),
+    provider: str = typer.Option(
+        "elevenlabs",
+        "--provider",
+        "-p",
+        help="Audio provider: elevenlabs (default) or stable_audio",
+    ),
     exclude_days: int = typer.Option(
         7,
         "--exclude-days",
@@ -282,9 +336,17 @@ def plan(
 
     Example:
         coolio plan "lofi hip hop, rainy day vibes"
+        coolio plan "ambient focus music" --provider stable_audio
     """
+    # Validate provider
+    valid_providers = ["elevenlabs", "stable_audio"]
+    if provider not in valid_providers:
+        console.print(f"[red]Invalid provider '{provider}'. Choose from: {', '.join(valid_providers)}[/red]")
+        raise typer.Exit(1)
+
     console.print(Panel(
-        f"[bold]Concept:[/bold] {concept}",
+        f"[bold]Concept:[/bold] {concept}\n"
+        f"[bold]Provider:[/bold] {provider}",
         title="Session Plan Preview"
     ))
     console.print()
@@ -306,6 +368,7 @@ def plan(
 
     # Generate Plan
     console.print(f"Planning with model: {model or get_settings().openrouter_model}")
+    console.print(f"Provider: {provider}")
     console.print()
 
     try:
@@ -314,6 +377,7 @@ def plan(
             candidates=candidates,
             target_duration_minutes=duration,
             model=model,
+            provider=provider,
         )
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -392,28 +456,31 @@ def providers():
 
     table = Table()
     table.add_column("Provider", style="cyan")
+    table.add_column("Status")
     table.add_column("Max Duration")
     table.add_column("Cost")
     table.add_column("Best For")
 
     table.add_row(
-        "stable_audio",
-        "190 sec",
-        "$0.20/track",
-        "Electronic, ambient, synthwave",
-    )
-    table.add_row(
         "elevenlabs",
+        "[green]DEFAULT[/green]",
         "300 sec",
         "~$0.30/min",
         "Structured compositions, vocals",
+    )
+    table.add_row(
+        "stable_audio",
+        "[yellow]DEPRECATED[/yellow]",
+        "190 sec",
+        "$0.20/track",
+        "Electronic, ambient, synthwave",
     )
 
     console.print(table)
     console.print()
     console.print(
-        "The Curator agent automatically selects the best provider for each track "
-        "based on your concept."
+        "Use [cyan]--provider stable_audio[/cyan] to override the default.\n"
+        "Example: [cyan]coolio generate \"ambient music\" --provider stable_audio[/cyan]"
     )
 
 
@@ -673,7 +740,7 @@ def mix(
 def compose(
     session_dir: str = typer.Argument(
         ...,
-        help="Path to session directory containing mixed audio and thumbnail",
+        help="Path to session directory containing mixed audio and video clip",
     ),
     output: str = typer.Option(
         "final_video.mp4",
@@ -691,20 +758,15 @@ def compose(
         "--skip-upload",
         help="Skip uploading video to R2 storage",
     ),
-    waveform_color: str = typer.Option(
-        "white@0.5",
-        "--waveform-color",
-        help="Waveform color in FFmpeg format (e.g., 'white@0.5', 'green@0.6')",
-    ),
 ):
     """
     Compose final YouTube video from session assets.
 
-    Combines thumbnail image, mixed audio, and waveform visualization
-    into a YouTube-ready MP4 video. Also generates metadata for upload.
+    Loops a video clip for the duration of the mixed audio track
+    to create a YouTube-ready MP4 video. Also generates metadata for upload.
 
     Requires:
-        - Thumbnail image (thumbnail.png or similar)
+        - Video clip ({session_id}_clip.mp4)
         - Mixed audio (final_mix.mp3 - run `coolio mix` first)
 
     Example:
@@ -731,7 +793,6 @@ def compose(
 
     console.print(Panel(
         f"[bold]Session:[/bold] {session_path.name}\n"
-        f"[bold]Waveform:[/bold] {waveform_color}\n"
         f"[bold]Upload to R2:[/bold] {not skip_upload}",
         title="Video Composer"
     ))
@@ -740,7 +801,7 @@ def compose(
     # Step 1: Compose video
     console.print("[bold cyan]Step 1:[/bold cyan] Composing video...")
     try:
-        composer = VideoComposer(waveform_color=waveform_color)
+        composer = VideoComposer()
         result = composer.compose_session(
             session_dir=session_path,
             output_filename=output,
@@ -817,6 +878,474 @@ def compose(
         f"{metadata_info}"
         f"{r2_info}\n\n"
         f"[dim]Ready for manual upload to YouTube Studio[/dim]",
+        title="Complete",
+    ))
+
+
+@app.command()
+def video(
+    session: str = typer.Argument(
+        ...,
+        help="Session directory path or session ID (e.g., session_20251206_233300)",
+    ),
+    visual_hint: str = typer.Option(
+        None,
+        "--visual-hint",
+        help="Atmosphere/style hints for motion prompt generation",
+    ),
+    motion_prompt: str = typer.Option(
+        None,
+        "--motion-prompt",
+        help="Custom motion prompt (skips LLM generation)",
+    ),
+    skip_upload: bool = typer.Option(
+        False,
+        "--skip-upload",
+        help="Skip uploading video clip to R2 storage",
+    ),
+    model: str = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="OpenRouter model to use for motion prompt generation",
+    ),
+):
+    """
+    Generate or retry video clip creation for an existing session.
+
+    Uses the session's thumbnail to create a 10-second looping video clip
+    via Kling AI. Useful for retrying after adding tokens or fixing errors.
+
+    The command will:
+    1. Find the session (local path or R2)
+    2. Locate or download the thumbnail
+    3. Generate a motion prompt (or use --motion-prompt)
+    4. Create the video clip via Kling AI
+
+    Example:
+        coolio video output/audio/session_20251206_233300
+        coolio video session_20251206_233300 --visual-hint "subtle green lighting"
+        coolio video session_20251206_233300 --motion-prompt "Slow haze drift..."
+    """
+    import json
+    from pathlib import Path
+
+    console.print(Panel(
+        f"[bold]Session:[/bold] {session}",
+        title="Video Clip Generator"
+    ))
+    console.print()
+
+    # Step 1: Resolve session path and load metadata
+    console.print("[bold cyan]Step 1:[/bold cyan] Loading session...")
+    session_path = Path(session)
+    session_id: str
+    concept: str = ""
+    visual_prompt: str | None = None
+
+    # Check if it's a local directory path
+    if session_path.exists() and session_path.is_dir():
+        session_id = session_path.name
+        session_dir = session_path
+        console.print(f"  Found local session: {session_dir}")
+
+        # Try to load session.json for concept (locally first, then R2)
+        session_json = session_dir / "session.json"
+        if session_json.exists():
+            with open(session_json) as f:
+                session_data = json.load(f)
+                concept = session_data.get("concept", "")
+                console.print(f"  Concept: {concept[:60]}{'...' if len(concept) > 60 else ''}")
+        else:
+            # session.json not local (cleaned up), fetch from R2
+            console.print("  session.json not found locally, fetching from R2...")
+            try:
+                r2 = R2Storage()
+                session_meta = r2.get_session_metadata(session_id)
+                if session_meta:
+                    concept = session_meta.get("concept", "")
+                    # Save locally for future use
+                    with open(session_json, "w") as f:
+                        json.dump(session_meta, f, indent=2)
+                    console.print(f"  Concept: {concept[:60]}{'...' if len(concept) > 60 else ''}")
+                else:
+                    console.print("  [yellow]Session not found in R2[/yellow]")
+            except Exception as e:
+                console.print(f"  [yellow]Failed to fetch from R2: {e}[/yellow]")
+    else:
+        # Assume it's a session ID - try R2
+        session_id = session if session.startswith("session_") else f"session_{session}"
+        session_dir = Path(get_settings().output_dir) / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        console.print(f"  Fetching from R2: {session_id}")
+        try:
+            r2 = R2Storage()
+            session_meta = r2.get_session_metadata(session_id)
+            if not session_meta:
+                console.print(f"[red]Session not found in R2: {session_id}[/red]")
+                raise typer.Exit(1)
+
+            concept = session_meta.get("concept", "")
+            console.print(f"  Concept: {concept[:60]}{'...' if len(concept) > 60 else ''}")
+
+            # Save session.json locally
+            session_json = session_dir / "session.json"
+            with open(session_json, "w") as f:
+                json.dump(session_meta, f, indent=2)
+
+        except typer.Exit:
+            raise
+        except Exception as e:
+            console.print(f"[red]Failed to fetch session from R2: {e}[/red]")
+            raise typer.Exit(1)
+
+    # Step 2: Find or download thumbnail
+    console.print()
+    console.print("[bold cyan]Step 2:[/bold cyan] Locating thumbnail...")
+
+    thumbnail_path = session_dir / f"{session_id}_thumbnail.png"
+    if not thumbnail_path.exists():
+        # Try alternate name pattern
+        for pattern in ["*_thumbnail.png", "*thumbnail*.png"]:
+            matches = list(session_dir.glob(pattern))
+            if matches:
+                thumbnail_path = matches[0]
+                break
+
+    if not thumbnail_path.exists():
+        # Try to download from R2
+        console.print("  Thumbnail not found locally, checking R2...")
+        try:
+            r2 = R2Storage()
+            downloaded_path = r2.download_thumbnail(session_id, session_dir)
+            if downloaded_path:
+                thumbnail_path = downloaded_path
+                console.print(f"  Downloaded: {thumbnail_path.name}")
+            else:
+                console.print("[red]Thumbnail not found in R2[/red]")
+                console.print("Run the full generate command first to create a thumbnail.")
+                raise typer.Exit(1)
+        except typer.Exit:
+            raise
+        except Exception as e:
+            console.print(f"[red]Failed to download thumbnail: {e}[/red]")
+            raise typer.Exit(1)
+    else:
+        console.print(f"  Found: {thumbnail_path.name}")
+
+    # Step 3: Generate or use motion prompt
+    console.print()
+    console.print("[bold cyan]Step 3:[/bold cyan] Preparing motion prompt...")
+
+    if motion_prompt:
+        # User provided custom motion prompt
+        final_motion_prompt = motion_prompt
+        console.print("  Using custom motion prompt")
+        console.print(f"  Prompt: {final_motion_prompt[:50]}...")
+    else:
+        # Generate motion prompt via LLM
+        if not concept:
+            console.print("[yellow]No concept found - using generic motion prompt[/yellow]")
+            concept = "Electronic music, atmospheric, hypnotic"
+
+        console.print("  Generating motion prompt via LLM...")
+        try:
+            motion_data = generate_video_motion_prompt(
+                concept=concept,
+                image_prompt=visual_prompt,
+                model=model,
+            )
+            final_motion_prompt = str(motion_data["prompt"])
+            motion_type = str(motion_data["motion_type"])
+            console.print(f"  Motion type: {motion_type}")
+            console.print(f"  Prompt: {final_motion_prompt[:50]}...")
+        except Exception as e:
+            console.print(f"[red]Failed to generate motion prompt: {e}[/red]")
+            raise typer.Exit(1)
+
+    # Step 4: Generate video via Kling AI
+    console.print()
+    console.print("[bold cyan]Step 4:[/bold cyan] Creating video clip via Kling AI...")
+    console.print("  This may take a few minutes...")
+
+    try:
+        video_gen = KlingAIVideoGenerator()
+        video_result = video_gen.generate(
+            image_path=thumbnail_path,
+            prompt=final_motion_prompt,
+            session_id=session_id,
+            output_dir=session_dir,
+        )
+        console.print(f"  [green]Video created:[/green] {video_result.output_path.name}")
+        console.print(f"  Duration: {video_result.duration_seconds}s")
+    except Exception as e:
+        console.print(f"[red]Kling AI video generation failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    # Step 5: Upload to R2 (optional)
+    r2_info = ""
+    if not skip_upload:
+        console.print()
+        console.print("[bold cyan]Step 5:[/bold cyan] Uploading to R2...")
+        try:
+            r2 = R2Storage()
+            video_key = f"sessions/{session_id}/video/{video_result.output_path.name}"
+            r2.upload_file(video_result.output_path, video_key)
+            r2_info = f"\nR2: {video_key}"
+            console.print(f"  Uploaded: {video_key}")
+        except Exception as e:
+            console.print(f"  [yellow]R2 upload failed: {e}[/yellow]")
+            r2_info = "\nR2: upload failed"
+    else:
+        console.print()
+        console.print("[bold cyan]Step 5:[/bold cyan] Skipping R2 upload (--skip-upload)")
+
+    # Summary
+    console.print()
+    console.print(Panel(
+        f"[green]Video clip created![/green]\n\n"
+        f"Session: {session_id}\n"
+        f"Video: {video_result.output_path}\n"
+        f"Duration: {video_result.duration_seconds}s"
+        f"{r2_info}\n\n"
+        f"[dim]Next: coolio mix {session_dir}[/dim]",
+        title="Complete",
+    ))
+
+
+@app.command()
+def visuals(
+    session: str = typer.Argument(
+        ...,
+        help="Session directory path or session ID (e.g., session_20251206_233300)",
+    ),
+    visual_hint: str = typer.Option(
+        None,
+        "--visual-hint",
+        help="Atmosphere/style hints for thumbnail generation",
+    ),
+    motion_prompt: str = typer.Option(
+        None,
+        "--motion-prompt",
+        help="Custom motion prompt for video (skips LLM generation)",
+    ),
+    skip_upload: bool = typer.Option(
+        False,
+        "--skip-upload",
+        help="Skip uploading assets to R2 storage",
+    ),
+    model: str = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="OpenRouter model to use for prompt generation",
+    ),
+):
+    """
+    Regenerate all visual assets (thumbnail + video clip) for an existing session.
+
+    Uses the session's concept to generate a new thumbnail and video clip.
+    This will overwrite any existing visual assets in the session directory.
+
+    The command will:
+    1. Load session metadata (concept) from local or R2
+    2. Generate a visual prompt from the concept (LLM)
+    3. Create a new thumbnail using the reference image
+    4. Generate a motion prompt (LLM)
+    5. Create a new video clip via Kling AI
+    6. Upload assets to R2 (unless --skip-upload)
+
+    Example:
+        coolio visuals output/audio/session_20251206_233300
+        coolio visuals session_20251206_233300 --visual-hint "moody red lighting"
+    """
+    import json
+    from pathlib import Path
+
+    console.print(Panel(
+        f"[bold]Session:[/bold] {session}",
+        title="Visual Asset Regenerator"
+    ))
+    console.print()
+
+    # Step 1: Resolve session path and load metadata
+    console.print("[bold cyan]Step 1:[/bold cyan] Loading session...")
+    session_path = Path(session)
+    session_id: str
+    concept: str = ""
+
+    # Check if it's a local directory path
+    if session_path.exists() and session_path.is_dir():
+        session_id = session_path.name
+        session_dir = session_path
+        console.print(f"  Found local session: {session_dir}")
+
+        # Try to load session.json for concept (locally first, then R2)
+        session_json = session_dir / "session.json"
+        if session_json.exists():
+            with open(session_json) as f:
+                session_data = json.load(f)
+                concept = session_data.get("concept", "")
+                console.print(f"  Concept: {concept[:60]}{'...' if len(concept) > 60 else ''}")
+        else:
+            # session.json not local (cleaned up), fetch from R2
+            console.print("  session.json not found locally, fetching from R2...")
+            try:
+                r2 = R2Storage()
+                session_meta = r2.get_session_metadata(session_id)
+                if session_meta:
+                    concept = session_meta.get("concept", "")
+                    # Save locally for future use
+                    with open(session_json, "w") as f:
+                        json.dump(session_meta, f, indent=2)
+                    console.print(f"  Concept: {concept[:60]}{'...' if len(concept) > 60 else ''}")
+                else:
+                    console.print("  [yellow]Session not found in R2[/yellow]")
+            except Exception as e:
+                console.print(f"  [yellow]Failed to fetch from R2: {e}[/yellow]")
+    else:
+        # Assume it's a session ID - try R2
+        session_id = session if session.startswith("session_") else f"session_{session}"
+        session_dir = Path(get_settings().output_dir) / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        console.print(f"  Fetching from R2: {session_id}")
+        try:
+            r2 = R2Storage()
+            session_meta = r2.get_session_metadata(session_id)
+            if not session_meta:
+                console.print(f"[red]Session not found in R2: {session_id}[/red]")
+                raise typer.Exit(1)
+
+            concept = session_meta.get("concept", "")
+            console.print(f"  Concept: {concept[:60]}{'...' if len(concept) > 60 else ''}")
+
+            # Save session.json locally
+            session_json = session_dir / "session.json"
+            with open(session_json, "w") as f:
+                json.dump(session_meta, f, indent=2)
+
+        except typer.Exit:
+            raise
+        except Exception as e:
+            console.print(f"[red]Failed to fetch session from R2: {e}[/red]")
+            raise typer.Exit(1)
+
+    if not concept:
+        console.print("[red]No concept found in session metadata[/red]")
+        console.print("Cannot generate visuals without a concept.")
+        raise typer.Exit(1)
+
+    # Step 2: Generate visual prompt from concept
+    console.print()
+    console.print("[bold cyan]Step 2:[/bold cyan] Generating visual prompt...")
+
+    if visual_hint:
+        console.print(f"  Hint: {visual_hint}")
+
+    try:
+        visual_data = generate_visual_prompt(concept, visual_hint=visual_hint, model=model)
+        visual_prompt = str(visual_data["prompt"])
+        scene_type = str(visual_data["scene_type"])
+        console.print(f"  Scene type: {scene_type}")
+        console.print(f"  Prompt: {visual_prompt[:60]}...")
+    except Exception as e:
+        console.print(f"[red]Failed to generate visual prompt: {e}[/red]")
+        raise typer.Exit(1)
+
+    # Step 3: Generate thumbnail image
+    console.print()
+    console.print("[bold cyan]Step 3:[/bold cyan] Generating thumbnail...")
+
+    try:
+        visual_gen = VisualGenerator()
+        thumbnail_path = visual_gen.generate(
+            prompt=visual_prompt,
+            session_id=session_id,
+            output_dir=session_dir,
+        )
+        console.print(f"  [green]Thumbnail created:[/green] {thumbnail_path.name}")
+    except Exception as e:
+        console.print(f"[red]Failed to generate thumbnail: {e}[/red]")
+        raise typer.Exit(1)
+
+    # Step 4: Generate motion prompt
+    console.print()
+    console.print("[bold cyan]Step 4:[/bold cyan] Generating motion prompt...")
+
+    if motion_prompt:
+        final_motion_prompt = motion_prompt
+        console.print("  Using custom motion prompt")
+        console.print(f"  Prompt: {final_motion_prompt[:50]}...")
+    else:
+        try:
+            motion_data = generate_video_motion_prompt(
+                concept=concept,
+                image_prompt=visual_prompt,
+                model=model,
+            )
+            final_motion_prompt = str(motion_data["prompt"])
+            motion_type = str(motion_data["motion_type"])
+            console.print(f"  Motion type: {motion_type}")
+            console.print(f"  Prompt: {final_motion_prompt[:60]}...")
+        except Exception as e:
+            console.print(f"[red]Failed to generate motion prompt: {e}[/red]")
+            raise typer.Exit(1)
+
+    # Step 5: Generate video clip via Kling AI
+    console.print()
+    console.print("[bold cyan]Step 5:[/bold cyan] Creating video clip via Kling AI...")
+    console.print("  This may take a few minutes...")
+
+    try:
+        video_gen = KlingAIVideoGenerator()
+        video_result = video_gen.generate(
+            image_path=thumbnail_path,
+            prompt=final_motion_prompt,
+            session_id=session_id,
+            output_dir=session_dir,
+        )
+        console.print(f"  [green]Video created:[/green] {video_result.output_path.name}")
+        console.print(f"  Duration: {video_result.duration_seconds}s")
+    except Exception as e:
+        console.print(f"[red]Kling AI video generation failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    # Step 6: Upload to R2 (optional)
+    r2_info = ""
+    if not skip_upload:
+        console.print()
+        console.print("[bold cyan]Step 6:[/bold cyan] Uploading to R2...")
+        try:
+            r2 = R2Storage()
+            # Upload thumbnail
+            thumb_key = r2.upload_image(thumbnail_path, session_id)
+            console.print(f"  Thumbnail: {thumb_key}")
+
+            # Upload video clip
+            video_key = f"sessions/{session_id}/video/{video_result.output_path.name}"
+            r2.upload_file(video_result.output_path, video_key)
+            console.print(f"  Video: {video_key}")
+
+            r2_info = f"\nR2 Thumbnail: {thumb_key}\nR2 Video: {video_key}"
+        except Exception as e:
+            console.print(f"  [yellow]R2 upload failed: {e}[/yellow]")
+            r2_info = "\nR2: upload failed"
+    else:
+        console.print()
+        console.print("[bold cyan]Step 6:[/bold cyan] Skipping R2 upload (--skip-upload)")
+
+    # Summary
+    console.print()
+    console.print(Panel(
+        f"[green]Visual assets regenerated![/green]\n\n"
+        f"Session: {session_id}\n"
+        f"Thumbnail: {thumbnail_path}\n"
+        f"Video: {video_result.output_path}\n"
+        f"Duration: {video_result.duration_seconds}s"
+        f"{r2_info}\n\n"
+        f"[dim]Next: coolio mix {session_dir}[/dim]",
         title="Complete",
     ))
 

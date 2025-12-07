@@ -40,6 +40,18 @@ class Settings(BaseSettings):
         alias="R2_ENDPOINT_URL",
     )
 
+    # Kling AI (Video Generation)
+    kling_ai_access_key: str = Field(..., alias="KLING_AI_ACCESS_KEY")
+    kling_ai_secret_key: str = Field(..., alias="KLING_AI_SECRET_KEY")
+    klingai_base_url: str = Field(
+        default="https://api-singapore.klingai.com",
+        alias="KLINGAI_BASE_URL",
+    )
+    klingai_model: str = Field(
+        default="kling-v2-5-turbo",
+        alias="KLINGAI_MODEL",
+    )
+
     # Output settings
     output_dir: Path = Field(default=Path("output/audio"))
 

@@ -42,6 +42,14 @@ class LibraryQuery:
                 data = self.storage.read_json(key)
                 track = TrackMetadata.from_dict(data)
 
+                # PROVIDER FILTER: Only return ElevenLabs tracks for reuse.
+                # Rationale: ElevenLabs tracks cost more to generate (~$0.30/min),
+                # so reusing them maximizes cost savings. Stable Audio tracks are
+                # cheap ($0.20 flat) so we prefer to generate fresh ones.
+                # The LLM planner only sees ElevenLabs candidates.
+                if track.provider != "elevenlabs":
+                    continue
+
                 # Recency Check - skip recently used tracks
                 if track.last_used_at and track.last_used_at > cutoff_date:
                     logger.debug(f"Skipping track {track.track_id} (used {track.last_used_at})")
@@ -52,15 +60,8 @@ class LibraryQuery:
                 logger.warning(f"Failed to process track metadata at {key}: {e}")
                 continue
 
-        # Sort candidates to prioritize ElevenLabs over Stable Audio
-        # ElevenLabs tracks come first (provider sort: "elevenlabs" < "stable_audio")
-        candidates.sort(key=lambda t: (t.provider != "elevenlabs", t.provider))
-
-        elevenlabs_count = sum(1 for t in candidates if t.provider == "elevenlabs")
-        stable_count = len(candidates) - elevenlabs_count
         logger.info(
-            f"Found {len(candidates)} candidate tracks after filtering "
-            f"({elevenlabs_count} elevenlabs, {stable_count} stable_audio)"
+            f"Found {len(candidates)} ElevenLabs tracks available for reuse"
         )
         return candidates
 

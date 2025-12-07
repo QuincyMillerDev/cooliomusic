@@ -99,11 +99,13 @@ class MusicGenerator:
         self,
         upload_to_r2: bool = True,
         auto_cleanup: bool = True,
+        provider_override: str | None = None,
     ) -> None:
         s = get_settings()
         self.output_dir = s.output_dir
         self._upload_to_r2 = upload_to_r2
         self._auto_cleanup = auto_cleanup
+        self._provider_override = provider_override
         self._r2: R2Storage | None = None
 
         # Initialize provider registry
@@ -182,6 +184,7 @@ class MusicGenerator:
         """Generate a single track using the provider specified in the slot.
 
         Uses automatic retry with exponential backoff for transient failures.
+        If a provider_override is set on the generator, it takes precedence.
 
         Args:
             slot: The track slot with generation parameters.
@@ -190,7 +193,11 @@ class MusicGenerator:
         Returns:
             GeneratedTrack with file paths and metadata.
         """
-        provider_name = slot.provider or "stable_audio"
+        # Use provider override if set, otherwise fall back to slot's provider
+        provider_name = self._provider_override or slot.provider or "elevenlabs"
+
+        # Update slot to reflect the actual provider being used
+        slot.provider = provider_name
 
         if (
             provider_name == "elevenlabs"
@@ -387,6 +394,7 @@ class MusicGenerator:
         print(f"\nExecuting Session Plan: {len(plan.slots)} tracks")
         print(f"  Concept: {plan.concept}")
         print(f"  Genre: {plan.genre}")
+        print(f"  Provider: {self._provider_override or 'per-slot'}")
         print(f"  Library reuse: {len(plan.library_tracks)} tracks")
         print(f"  New generation: {len(plan.generation_tracks)} tracks")
         print(f"  Estimated cost: ${plan.estimated_cost:.2f}")
@@ -411,7 +419,7 @@ class MusicGenerator:
 
                 elif slot.source == "generate":
                     # Generate new track
-                    provider = slot.provider or "stable_audio"
+                    provider = self._provider_override or slot.provider or "elevenlabs"
                     print(f"GENERATING '{slot.title}' via {provider}...")
                     track = self._generate_track(slot, session_dir)
                     final_tracks.append(track)
@@ -566,7 +574,7 @@ class MusicGenerator:
                     energy=slot_data.get("energy", 5),
                     duration_ms=slot_data.get("duration_ms", 180000),
                     prompt=slot_data.get("prompt"),
-                    provider=slot_data.get("provider", "stable_audio"),
+                    provider=self._provider_override or slot_data.get("provider", "elevenlabs"),
                     title=slot_data.get("title"),
                 )
                 slots_to_repair.append(slot)

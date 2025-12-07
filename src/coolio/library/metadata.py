@@ -81,11 +81,23 @@ class TrackMetadata:
 
     @classmethod
     def from_dict(cls, data: dict) -> "TrackMetadata":
-        """Deserialize from dictionary."""
+        """Deserialize from dictionary.
+
+        Includes defensive defaults for optional fields to handle
+        older tracks in R2 that may be missing these fields.
+        """
+        # Defensive defaults for optional fields (won't affect new tracks)
+        data.setdefault("subgenre", None)
+        data.setdefault("last_used_at", None)
+        data.setdefault("usage_count", 0)
+        data.setdefault("audio_key", None)
+        data.setdefault("metadata_key", None)
+
         # Convert ISO strings back to datetime
         data["created_at"] = datetime.fromisoformat(data["created_at"])
         if data.get("last_used_at"):
             data["last_used_at"] = datetime.fromisoformat(data["last_used_at"])
+
         return cls(**data)
 
     def mark_used(self) -> None:

@@ -1,19 +1,46 @@
 """Video composition for YouTube uploads.
 
-Combines thumbnail image, waveform visualization, and audio
-into a final YouTube-ready MP4 video.
+Loops a video clip for the duration of the audio track
+to create a final YouTube-ready MP4 video.
 """
 
 import logging
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from coolio.video.waveform import check_ffmpeg, get_audio_duration
-
 logger = logging.getLogger(__name__)
+
+
+def check_ffmpeg() -> bool:
+    """Check if FFmpeg is available."""
+    try:
+        subprocess.run(
+            ["ffmpeg", "-version"],
+            capture_output=True,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def get_audio_duration(audio_path: Path) -> float:
+    """Get duration of an audio file in seconds using ffprobe."""
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(audio_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return float(result.stdout.strip())
 
 
 @dataclass
@@ -28,123 +55,81 @@ class CompositionResult:
 class VideoComposer:
     """Composes final video from session assets.
 
-    Combines:
-    - Static thumbnail image as background (1920x1080)
-    - Audio-reactive waveform overlay
-    - Mixed audio track
+    Loops a video clip for the duration of the mixed audio track.
     """
 
     def __init__(
         self,
         width: int = 1920,
         height: int = 1080,
-        waveform_height: int = 120,
-        waveform_color: str = "white@0.9",
-        fade_in_duration: float = 5.0,
     ):
         """Initialize the video composer.
 
         Args:
             width: Video width in pixels.
             height: Video height in pixels.
-            waveform_height: Height of the waveform bar.
-            waveform_color: Waveform core color in FFmpeg format.
-            fade_in_duration: Duration of fade-in from black/silence in seconds.
         """
         if not check_ffmpeg():
             raise RuntimeError("FFmpeg not found. Please install FFmpeg.")
 
         self.width = width
         self.height = height
-        self.waveform_height = waveform_height
-        self.waveform_color = waveform_color
-        self.fade_in_duration = fade_in_duration
 
     def compose(
         self,
-        thumbnail_path: Path,
+        clip_path: Path,
         audio_path: Path,
         output_path: Path,
     ) -> CompositionResult:
-        """Compose final video from thumbnail and audio.
+        """Compose final video by looping a video clip for the audio duration.
 
         Args:
-            thumbnail_path: Path to thumbnail image (PNG/JPG).
+            clip_path: Path to video clip to loop (MP4).
             audio_path: Path to mixed audio file (MP3).
             output_path: Path for output video file.
 
         Returns:
             CompositionResult with output path and metadata.
         """
-        if not thumbnail_path.exists():
-            raise FileNotFoundError(f"Thumbnail not found: {thumbnail_path}")
+        if not clip_path.exists():
+            raise FileNotFoundError(f"Video clip not found: {clip_path}")
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio not found: {audio_path}")
 
         # Get audio duration
         duration = get_audio_duration(audio_path)
         logger.info(f"Composing video: {duration:.1f}s duration")
-        logger.info(f"  Thumbnail: {thumbnail_path}")
+        logger.info(f"  Clip: {clip_path}")
         logger.info(f"  Audio: {audio_path}")
 
-        # Build FFmpeg filter graph:
-        # 1. Scale thumbnail to exact dimensions
-        # 2. Loop thumbnail for duration
-        # 3. Generate glow waveform (50% width, transparent)
-        # 4. Generate core waveform (50% width, opaque)
-        # 5. Overlay waveforms on thumbnail (centered)
-        # 6. Mux with audio
-
-        # Calculate waveform dimensions and position (50% width, centered)
-        wave_width = int(self.width * 0.5)
-        wave_height = self.waveform_height
-        x_pos = int((self.width - wave_width) / 2)
-        y_pos = int((self.height - wave_height) / 2)
-
-        # FFmpeg filter complex:
-        # [0:v] = thumbnail image
-        # [1:a] = audio for waveform generation
-        # [2:a] = audio for final output
+        # FFmpeg filter: scale/pad video to target dimensions with high-quality lanczos
         filter_complex = (
-            # Scale, loop, and fade in thumbnail from black
-            f"[0:v]scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
-            f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black,"
-            f"loop=loop=-1:size=1:start=0,trim=duration={duration},setpts=PTS-STARTPTS,"
-            f"fade=t=in:st=0:d={self.fade_in_duration}[bg];"
-            # Generate waveform glow (Layer 1) - Broader, transparent, blurred
-            f"[1:a]showwaves=s={wave_width}x{wave_height}:"
-            f"mode=cline:colors=white@0.15:scale=sqrt:draw=full,gblur=sigma=5[glow];"
-            # Generate waveform core (Layer 2) - Sharp, opaque, slightly rounded
-            f"[1:a]showwaves=s={wave_width}x{wave_height}:"
-            f"mode=cline:colors={self.waveform_color}:scale=sqrt:draw=full,gblur=sigma=1[core];"
-            # Overlay waveforms on background (centered)
-            f"[bg][glow]overlay={x_pos}:{y_pos}:shortest=1[tmp];"
-            f"[tmp][core]overlay={x_pos}:{y_pos}:shortest=1[out]"
+            f"[0:v]scale={self.width}:{self.height}:"
+            f"force_original_aspect_ratio=decrease:flags=lanczos,"
+            f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2:black[out]"
         )
 
         cmd = [
             "ffmpeg",
             "-y",  # Overwrite output
-            "-loop", "1",  # Loop image
-            "-i", str(thumbnail_path),  # Input 0: thumbnail
-            "-i", str(audio_path),  # Input 1: audio for waveform
-            "-i", str(audio_path),  # Input 2: audio for final output
+            "-stream_loop", "-1",  # Loop input video indefinitely
+            "-i", str(clip_path),  # Input 0: video clip
+            "-i", str(audio_path),  # Input 1: audio
             "-filter_complex", filter_complex,
             "-map", "[out]",  # Video from filter
-            "-map", "2:a",  # Audio from input 2
-            "-af", f"afade=t=in:st=0:d={self.fade_in_duration}",  # Audio fade-in
+            "-map", "1:a",  # Audio from input 1
             "-c:v", "libx264",
-            "-preset", "medium",
-            "-crf", "20",
+            "-preset", "slow",  # Higher quality encoding
+            "-crf", "15",  # Very high quality (lower = better, 15 is excellent)
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
-            "-b:a", "192k",
+            "-b:a", "320k",  # Higher audio bitrate
             "-movflags", "+faststart",  # Web optimization
-            "-t", str(duration),  # Explicit duration
+            "-t", str(duration),  # Trim to exact audio duration
             str(output_path),
         ]
 
-        logger.info("  Running FFmpeg composition...")
+        logger.info("  Running FFmpeg composition (high quality)...")
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -177,7 +162,7 @@ class VideoComposer:
         """Compose video from a session directory.
 
         Looks for:
-        - thumbnail.png or *_thumbnail.png in session_dir
+        - {session_id}_clip.mp4 in session_dir
         - final_mix.mp3 in session_dir
 
         Args:
@@ -187,12 +172,12 @@ class VideoComposer:
         Returns:
             CompositionResult with output path and metadata.
         """
-        # Find thumbnail
-        thumbnail_path = self._find_thumbnail(session_dir)
-        if not thumbnail_path:
+        # Find video clip
+        clip_path = self._find_clip(session_dir)
+        if not clip_path:
             raise FileNotFoundError(
-                f"No thumbnail found in {session_dir}. "
-                "Run `coolio generate` with visual generation enabled."
+                f"No video clip found in {session_dir}. "
+                f"Expected: {session_dir.name}_clip.mp4"
             )
 
         # Find audio
@@ -206,14 +191,32 @@ class VideoComposer:
         output_path = session_dir / output_filename
 
         # Compose the video
-        result = self.compose(thumbnail_path, audio_path, output_path)
+        result = self.compose(clip_path, audio_path, output_path)
 
         # Check thumbnail size for YouTube upload (must be < 2MB)
-        # We do this AFTER video composition so the video uses the high-quality source,
-        # but we ensure a compliant file exists for upload.
-        self._ensure_thumbnail_upload_ready(thumbnail_path)
+        # This is separate from video composition but ensures upload compliance.
+        thumbnail_path = self._find_thumbnail(session_dir)
+        if thumbnail_path:
+            self._ensure_thumbnail_upload_ready(thumbnail_path)
 
         return result
+
+    def _find_clip(self, session_dir: Path) -> Optional[Path]:
+        """Find video clip in session directory.
+
+        Looks for {session_id}_clip.mp4 pattern.
+
+        Args:
+            session_dir: Path to session directory.
+
+        Returns:
+            Path to video clip, or None if not found.
+        """
+        session_id = session_dir.name
+        clip_path = session_dir / f"{session_id}_clip.mp4"
+        if clip_path.exists():
+            return clip_path
+        return None
 
     def _ensure_thumbnail_upload_ready(self, thumbnail_path: Path) -> None:
         """Ensure a version of the thumbnail exists that is < 2MB for YouTube upload."""
@@ -226,10 +229,10 @@ class VideoComposer:
             return
 
         logger.info(f"Thumbnail > 2MB ({size_mb:.1f} MB), creating optimized version for upload...")
-        
+
         # Create a compressed version
         optimized_path = thumbnail_path.parent / f"{thumbnail_path.stem}_upload_ready.jpg"
-        
+
         try:
             # Use FFmpeg to compress (convert to JPG quality 15)
             # -q:v 15 usually results in <500KB for 1080p images
@@ -270,4 +273,3 @@ class VideoComposer:
                 return matches[0]
 
         return None
-
