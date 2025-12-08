@@ -53,7 +53,12 @@ STRUCTURE:
 
 3. CTAs:
    "► subscribe to coolio music: @cooliomusic"
-   "► support the channel: https://buymeacoffee.com/cooliomusic"
+   "► if this mix helped you focus, code, or get through a late night, consider buying me a coffee: https://buymeacoffee.com/cooliomusic"
+   
+   Vary the coffee CTA angle naturally. Some options:
+   - "if this mix helped you [focus/code/study/get through the night]..."
+   - "youtube doesn't monetize music mixes, so if you want to support more..."
+   - "these mixes take time to craft—if they've helped you, consider..."
 
 4. TRACKLIST: Use this exact format with timestamps:
    // tracklist
@@ -70,7 +75,7 @@ some nights don't follow the rules. they're a chaotic, beautiful blur of moments
 this mix is perfect for late-night coding, introspection, or just embracing the beautiful chaos.
 
 ► subscribe to coolio music: @cooliomusic
-► support the channel: https://buymeacoffee.com/cooliomusic
+► if this mix helped you focus or get through a late night, consider buying me a coffee: https://buymeacoffee.com/cooliomusic
 
 // tracklist
 00:00 - fading language
