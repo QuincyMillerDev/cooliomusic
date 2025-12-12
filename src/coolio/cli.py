@@ -773,6 +773,168 @@ def mix(
     ))
 
 
+@app.command()
+def image(
+    session_dir: str = typer.Argument(
+        ...,
+        help="Path to session directory (should contain session.json; typically after `coolio mix`)",
+    ),
+    model: str = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="OpenRouter text model to generate the background brief (default: OPENROUTER_MODEL)",
+    ),
+    image_model: str = typer.Option(
+        None,
+        "--image-model",
+        help="OpenRouter image model to generate the session image (default: google/gemini-3-pro-image-preview)",
+    ),
+    ref_image: str = typer.Option(
+        None,
+        "--ref-image",
+        help="Reference image to anchor the foreground (default: bundled djreferenceimage.png)",
+    ),
+):
+    """
+    Generate a session image anchored to the reference DJ photo.
+
+    This is a standalone command (not orchestrated yet). It reads session metadata,
+    generates a background-only visual brief, then uses an image model with the
+    reference image as input so the DJ/gear remain consistent while only the
+    setting behind the DJ changes.
+    """
+    from pathlib import Path
+    import json
+
+    from coolio.session_image import (
+        build_image_prompt,
+        build_visual_seed,
+        generate_background_brief,
+        load_session_json,
+        now_iso,
+    )
+    from coolio.providers.openrouter_image import generate_image_from_reference
+
+    s = get_settings()
+    session_path = Path(session_dir)
+    if not session_path.exists():
+        console.print(f"[red]Session directory not found: {session_path}[/red]")
+        raise typer.Exit(1)
+
+    # Validate expected files
+    session_json_path = session_path / "session.json"
+    if not session_json_path.exists():
+        console.print(f"[red]Missing session.json in: {session_path}[/red]")
+        console.print("Tip: run `coolio generate ...` first (and optionally `coolio mix ...`).")
+        raise typer.Exit(1)
+
+    # Default output paths (always overwritten to keep workflow simple)
+    out_png = session_path / "session_image.png"
+    out_json = session_path / "session_image.json"
+    if out_png.exists() or out_json.exists():
+        console.print("[yellow]Overwriting existing session image outputs...[/yellow]")
+        console.print(f"  PNG:  {out_png}")
+        console.print(f"  JSON: {out_json}")
+
+    # Defaults
+    default_ref = (
+        Path(s.coolio_reference_dj_image_path)
+        if getattr(s, "coolio_reference_dj_image_path", None)
+        else (Path(__file__).resolve().parent / "assets" / "images" / "djreferenceimage.png")
+    )
+    ref_path = Path(ref_image) if ref_image else default_ref
+    chosen_image_model = image_model or getattr(s, "openrouter_image_model", None) or "google/gemini-3-pro-image-preview"
+    chosen_brief_model = model or s.openrouter_model
+
+    if not ref_path.exists():
+        console.print(f"[red]Reference image not found: {ref_path}[/red]")
+        raise typer.Exit(1)
+
+    # Load metadata and generate background brief
+    session_meta = load_session_json(session_path)
+    seed = build_visual_seed(session_meta)
+
+    console.print(Panel(
+        f"[bold]Session:[/bold] {session_path.name}\n"
+        f"[bold]Brief model:[/bold] {chosen_brief_model}\n"
+        f"[bold]Image model:[/bold] {chosen_image_model}\n"
+        f"[bold]Reference:[/bold] {ref_path}",
+        title="Session Image",
+    ))
+    console.print()
+    console.print("[bold cyan]Step 1:[/bold cyan] Generating background brief...")
+
+    try:
+        brief = generate_background_brief(seed=seed, model=chosen_brief_model)
+    except Exception as e:
+        console.print(f"[red]Failed to generate background brief: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print()
+    console.print(Panel(
+        json.dumps(brief.to_dict(), indent=2),
+        title="Background brief (background only)",
+    ))
+    console.print()
+
+    # Generate the image
+    console.print("[bold cyan]Step 2:[/bold cyan] Generating anchored session image...")
+    prompt = build_image_prompt(brief)
+
+    try:
+        result = generate_image_from_reference(
+            reference_image_path=ref_path,
+            prompt=prompt,
+            image_model=chosen_image_model,
+        )
+    except Exception as e:
+        # Persist debugging context for quick iteration (doesn't affect success path).
+        error_path = session_path / "session_image_error.json"
+        try:
+            error_payload = {
+                "session_id": session_path.name,
+                "created_at": now_iso(),
+                "reference_image": str(ref_path),
+                "brief_model": chosen_brief_model,
+                "image_model": chosen_image_model,
+                "background_brief": brief.to_dict(),
+                "prompt": prompt,
+                "error": str(e),
+            }
+            error_path.write_text(json.dumps(error_payload, indent=2))
+            console.print(f"[yellow]Wrote debug file: {error_path}[/yellow]")
+        except Exception:
+            # Best effort only; do not mask the original error.
+            pass
+        console.print(f"[red]Failed to generate session image: {e}[/red]")
+        raise typer.Exit(1)
+
+    # Persist outputs
+    out_png.write_bytes(result.image_bytes)
+    meta_out = {
+        "session_id": session_path.name,
+        "created_at": now_iso(),
+        "reference_image": str(ref_path),
+        "brief_model": chosen_brief_model,
+        "image_model": result.model_used,
+        "background_brief": brief.to_dict(),
+        "prompt": result.prompt,
+        "mime_type": result.mime_type,
+        "output_image": str(out_png),
+        "raw_response": result.raw_response,
+    }
+    out_json.write_text(json.dumps(meta_out, indent=2))
+
+    console.print()
+    console.print(Panel(
+        f"[green]Session image complete![/green]\n\n"
+        f"Image: {out_png}\n"
+        f"Metadata: {out_json}",
+        title="Complete",
+    ))
+
+
 @library_app.command("verify")
 def library_verify(
     prefix: str = typer.Option(

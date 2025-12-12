@@ -23,12 +23,22 @@ class Settings(BaseSettings):
     # OpenRouter (OpenAI-compatible API for multi-model support)
     openrouter_api_key: str = Field(..., alias="OPENROUTER_API_KEY")
     openrouter_model: str = Field(
-        default="openai/gpt-5.2",
+        default="openai/gpt-5.1",
         alias="OPENROUTER_MODEL",
     )
     openrouter_base_url: str = Field(
         default="https://openrouter.ai/api/v1",
         alias="OPENROUTER_BASE_URL",
+    )
+    openrouter_image_model: str = Field(
+        default="google/gemini-3-pro-image-preview",
+        alias="OPENROUTER_IMAGE_MODEL",
+    )
+
+    # Optional: override the default bundled reference image path.
+    coolio_reference_dj_image_path: Path | None = Field(
+        default=None,
+        alias="COOLIO_REFERENCE_DJ_IMAGE_PATH",
     )
 
     # Cloudflare R2 Storage
