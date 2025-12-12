@@ -25,7 +25,7 @@ BACKGROUND_BRIEF_SCHEMA = """Return valid JSON with this schema:
 {
   "setting": "1-2 sentences describing only the environment behind/around the DJ; keep it subtle and plausible (background replacement, not a new fantasy scene)",
   "time_of_day": "e.g. night, golden hour, overcast morning",
-  "lighting": "short phrase; match the reference exposure/contrast/white balance; do not add cinematic effects; do not change lighting direction drastically",
+  "lighting": "short phrase; MUST be ambient, dim, soft, low-key practical lighting; avoid harsh whites, overexposure, blown highlights, or hard flash; match the reference exposure/contrast/white balance; do not add cinematic effects; do not change lighting direction drastically",
   "color_palette": ["3-6 color words"],
   "props_background_only": ["2-5 items that appear in the BACKGROUND only that complement the music vibe; keep them realistic and understated"],
   "camera_style": "1 sentence; must remain consistent with reference image (same focal length/framing/perspective); documentary/photo-real",
@@ -144,7 +144,8 @@ def generate_background_brief(
         "Focus exclusively on the set/room/environment behind and around the subject.\n"
         "Treat this as BACKGROUND REPLACEMENT inside the same photo, not a new scene.\n"
         "Photorealistic, understated, documentary look. Match the reference realism.\n"
-        "Hard bans (do not include in your brief): neon, bloom, haze/fog/volumetric light, cinematic grading, ultra glossy reflections, CGI look.\n"
+        "Lighting style requirement: ambient, dim, soft, low-key practical lighting with controlled highlights.\n"
+        "Hard bans (do not include in your brief): neon, bloom, haze/fog/volumetric light, cinematic grading, ultra glossy reflections, CGI look, high-key lighting, hard flash, harsh whites, overexposure/blown highlights.\n"
         "Keep changes subtle: think wall treatment + a few props + practical lighting, nothing dramatic.\n\n"
         f"{BACKGROUND_BRIEF_SCHEMA}"
     )
@@ -202,6 +203,7 @@ def build_image_prompt(brief: BackgroundBrief) -> str:
         "Add modern over-ear DJ headphones to the subject (natural fit, no distortion).\n"
         "ONLY replace the background environment behind and around the DJ (subtle, realistic).\n"
         "Match the reference photo's realism: exposure, contrast, white balance, sharpness, and natural texture.\n"
+        "Lighting must be ambient, dim, soft, low-key practical lighting; avoid harsh whites, overexposure, and blown highlights.\n"
         "No cinematic grading, no bloom, no haze/fog, no neon, no glossy/CGI look.\n\n"
         f"BACKGROUND SETTING:\n{brief.setting}\n\n"
         f"TIME OF DAY: {brief.time_of_day}\n"
@@ -214,6 +216,7 @@ def build_image_prompt(brief: BackgroundBrief) -> str:
         "NEGATIVE:\n"
         "- no text, no captions, no watermarks, no logos\n"
         "- no extra people, no extra limbs, no distorted hands\n"
+        "- no harsh white lighting, no high-key lighting, no hard flash, no overexposure, no blown highlights, no washed-out whites\n"
         "- no bloom, no neon, no haze/fog/volumetric light, no cinematic grading\n"
         "- no ultra glossy reflections, no CGI, no plastic skin, no hyperreal look\n"
         "- no changes to the DJ face, goggles, clothing, pose, or equipment layout (except adding headphones)\n"

@@ -181,6 +181,8 @@ def generate_image_from_reference(
         "- ONLY change the background/setting behind and around the DJ.\n"
         "- Do not add text, watermarks, logos, UI, or captions.\n"
         "- Match the reference photo realism: exposure/contrast/white balance, natural textures.\n"
+        "- Lighting must be ambient, dim, soft, low-key practical lighting with controlled highlights.\n"
+        "- Avoid harsh whites, high-key lighting, hard flash, overexposure, and blown highlights.\n"
         "- Avoid cinematic effects: no bloom, no neon, no haze/fog/volumetric light, no glossy CGI look.\n"
         "- Keep photorealistic lighting and coherent shadows.\n"
     )

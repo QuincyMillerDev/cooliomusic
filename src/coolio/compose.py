@@ -16,7 +16,6 @@ import json
 import re
 import shutil
 import subprocess
-import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -324,36 +323,20 @@ def _build_title_right_side(genre: str) -> str:
         # best-effort default
         g = f"{g} techno"
 
-    # Prefer "playlist" language unless the descriptor already implies mix.
-    if "mix" in lowered or "dj" in lowered:
-        return f"{g} mix"
     return f"{g} playlist"
 
 
-def _pick_fallback_title_hook(seed: str) -> str:
-    """Pick a deterministic abstract hook (no genre words)."""
-    hooks = [
-        "time stopped about three hours ago.",
-        "flow is a state of mind.",
-        "escape the matrix.",
-        "somewhere between signal and silence.",
-        "let the room disappear.",
-        "midnight without a clock.",
-        "no thoughts, just motion.",
-        "the city hums in slow motion.",
-        "keep going—quietly.",
-        "background pressure, foreground calm.",
-    ]
-    h = hashlib.sha256(seed.encode("utf-8")).digest()
-    idx = int.from_bytes(h[:2], "big") % len(hooks)
-    return hooks[idx]
+_MIX_WORD_RE = re.compile(r"\bmix\b", flags=re.IGNORECASE)
 
 
-def _sanitize_title(title: str, *, seed: str, genre: str) -> str:
-    """Ensure title format: `<abstract hook> // <descriptor>`."""
+def _sanitize_title(title: str, *, genre: str) -> str:
+    """Normalize title format: `<abstract hook> // <descriptor>`.
+
+    Important: We do not invent the abstract hook in code. The LLM must supply it.
+    """
     raw = (title or "").strip()
     if not raw:
-        raw = ""
+        raise ComposeError("Metadata generator returned an empty title.")
 
     # Normalize common separators to `//`.
     for sep in [" | ", " - ", " · ", " • ", " — ", " – "]:
@@ -370,16 +353,22 @@ def _sanitize_title(title: str, *, seed: str, genre: str) -> str:
     left_words = re.findall(r"[a-zA-Z']+", left.lower())
     left_is_bad = (not left) or all(w in _TITLE_HOOK_BANNED for w in left_words)
     if left_is_bad:
-        left = _pick_fallback_title_hook(seed)
+        raise ComposeError(
+            "Metadata generator returned an invalid title hook. "
+            "Title must be `<abstract hook> // <descriptor>` and the hook must not be just genre words."
+        )
 
     # If right side is empty or unhelpful, rebuild from genre.
     if not right or right.lower() in {"playlist", "mix"}:
         right = _build_title_right_side(genre)
     else:
         # Ensure `//` side is descriptive (and not another abstract phrase).
-        # If it doesn't mention playlist/mix at all, append playlist.
         rlow = right.lower()
-        if "playlist" not in rlow and "mix" not in rlow:
+        # Force "playlist" language; never allow "mix".
+        if _MIX_WORD_RE.search(right):
+            right = _MIX_WORD_RE.sub("playlist", right)
+            rlow = right.lower()
+        if "playlist" not in rlow:
             right = f"{right} playlist"
 
     return f"{left} // {right}"
@@ -401,10 +390,11 @@ def generate_youtube_metadata(
     chapter_lines = "\n".join(f"{c.timestamp} - {c.title}" for c in chapters)
 
     system = (
-        "You are writing YouTube metadata for a music mix video.\n"
+        "You are writing YouTube metadata for a music playlist video.\n"
         "Write in a human creator voice. Avoid cringe. Avoid overclaiming.\n"
         "No lying: do not invent track titles, timestamps, or links.\n"
         "The tracklist timestamps are provided and must be used EXACTLY.\n"
+        "Use the word 'playlist' (never 'mix'). Do not use the word 'mix' anywhere.\n"
         "Return ONLY valid JSON.\n"
     )
 
@@ -420,10 +410,10 @@ def generate_youtube_metadata(
         "- Title MUST use this format exactly: <abstract hook> // <descriptor>\n"
         "- Use `//` (double slash). Do NOT use hyphens or pipes as the main separator.\n"
         "- The abstract hook must NOT be just the genre words. Make it a short, punchy, abstract phrase.\n"
+        "- Use the word 'playlist' (never 'mix'). Do not use the word 'mix' anywhere.\n"
         "- Examples:\n"
         "  - time stopped about three hours ago. // ambient deep techno playlist\n"
         "  - flow is a state of mind. // ambient techno playlist\n"
-        "  - escape the matrix. // ambient deep techno mix\n"
         f"- Buy Me a Coffee link must be used exactly: {BUY_ME_A_COFFEE_URL}\n"
         f"- This exact sentence must appear in the final description (we will append it verbatim): {APOLOGY_LINE}\n"
         "- description_intro must NOT include any URLs, promo links, or the tracklist.\n"
@@ -463,14 +453,11 @@ def generate_youtube_metadata(
     except json.JSONDecodeError as e:
         raise ComposeError(f"Invalid JSON from metadata generator: {e}") from e
 
-    title_seed = f"{session_id}|{concept}|{genre}"
-    title = _sanitize_title(str(data.get("title", "")).strip(), seed=title_seed, genre=genre)
+    title = _sanitize_title(str(data.get("title", "")).strip(), genre=genre)
     intro = _sanitize_description_intro(str(data.get("description_intro", "")).strip())
     hashtags = _normalize_hashtags(list(data.get("hashtags") or []))
     tags = _normalize_tags(list(data.get("tags") or []))
 
-    if not title:
-        raise ComposeError("Metadata generator returned empty title.")
     if not intro:
         raise ComposeError("Metadata generator returned empty description_intro.")
 
