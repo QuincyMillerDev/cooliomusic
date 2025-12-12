@@ -23,8 +23,12 @@ class Settings(BaseSettings):
     # OpenRouter (OpenAI-compatible API for multi-model support)
     openrouter_api_key: str = Field(..., alias="OPENROUTER_API_KEY")
     openrouter_model: str = Field(
-        default="openai/gpt-5.1",
+        default="openai/gpt-5.2-pro",
         alias="OPENROUTER_MODEL",
+    )
+    openrouter_youtube_metadata_model: str = Field(
+        default="openai/gpt-5.1",
+        alias="OPENROUTER_YOUTUBE_METADATA_MODEL",
     )
     openrouter_base_url: str = Field(
         default="https://openrouter.ai/api/v1",

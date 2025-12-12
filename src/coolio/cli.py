@@ -457,6 +457,7 @@ def config():
     table.add_row("Stability API Key", mask_key(s.stability_api_key))
     table.add_row("OpenRouter API Key", mask_key(s.openrouter_api_key))
     table.add_row("OpenRouter Model", s.openrouter_model)
+    table.add_row("YouTube Metadata Model", s.openrouter_youtube_metadata_model)
     table.add_row("Stable Audio Model", s.stable_audio_model)
     table.add_row(
         "Kling AI Access Key",

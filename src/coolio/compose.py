@@ -381,7 +381,7 @@ def generate_youtube_metadata(
 ) -> YoutubeMetadata:
     """Generate title/description/tags while keeping timestamps exact."""
     s = get_settings()
-    model = s.openrouter_model
+    model = s.openrouter_youtube_metadata_model
 
     concept = str(session_meta.get("concept", "")).strip()
     genre = str(session_meta.get("genre", "")).strip()
@@ -535,6 +535,7 @@ def compose_session(session_dir: Path) -> ComposeResult:
         "genre": str(session_meta.get("genre", "")),
         "concept": str(session_meta.get("concept", "")),
         "model_used": get_settings().openrouter_model,
+        "youtube_metadata_model_used": get_settings().openrouter_youtube_metadata_model,
     }
 
     out_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
