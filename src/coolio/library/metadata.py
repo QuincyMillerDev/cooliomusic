@@ -10,21 +10,16 @@ from datetime import datetime
 class TrackMetadata:
     """Metadata for a track stored in the library.
 
-    Designed to support curator agent queries for track reuse and
-    DJ-style playlist generation.
+    Simplified schema focusing on essential track information.
     """
 
     # Identity
     track_id: str
-    title: str  # Human-readable name (e.g., "These Things Will Come To Be")
+    title: str  # Human-readable name (e.g., "Recursive Patterns")
 
     # Musical attributes
     genre: str
-    subgenre: str | None
-    bpm: int
     duration_ms: int
-    energy: int  # 1-10 scale
-    role: str  # intro, build, peak, sustain, cooldown, outro
 
     # Generation info
     provider: str  # "elevenlabs" or "stable_audio"
@@ -39,35 +34,32 @@ class TrackMetadata:
     # R2 storage keys (populated after upload)
     audio_key: str | None = None
     metadata_key: str | None = None
+    
+    # Optional: keep BPM for informational use (not planning)
+    bpm: int | None = None
 
     @classmethod
     def create(
         cls,
         title: str,
         genre: str,
-        bpm: int,
         duration_ms: int,
-        energy: int,
-        role: str,
         provider: str,
         prompt: str,
         session_id: str,
-        subgenre: str | None = None,
+        bpm: int | None = None,
     ) -> "TrackMetadata":
         """Create a new TrackMetadata with generated ID and timestamps."""
         return cls(
             track_id=str(uuid.uuid4())[:8],
             title=title,
             genre=genre,
-            subgenre=subgenre,
-            bpm=bpm,
             duration_ms=duration_ms,
-            energy=energy,
-            role=role,
             provider=provider,
             prompt_hash=hashlib.sha256(prompt.encode()).hexdigest()[:16],
             session_id=session_id,
             created_at=datetime.now(),
+            bpm=bpm,
         )
 
     def to_dict(self) -> dict:
@@ -84,14 +76,19 @@ class TrackMetadata:
         """Deserialize from dictionary.
 
         Includes defensive defaults for optional fields to handle
-        older tracks in R2 that may be missing these fields.
+        older tracks in R2 that may have deprecated fields.
         """
-        # Defensive defaults for optional fields (won't affect new tracks)
-        data.setdefault("subgenre", None)
+        # Defensive defaults for optional fields
         data.setdefault("last_used_at", None)
         data.setdefault("usage_count", 0)
         data.setdefault("audio_key", None)
         data.setdefault("metadata_key", None)
+        data.setdefault("bpm", None)
+        
+        # Remove deprecated fields from old schema
+        data.pop("subgenre", None)
+        data.pop("energy", None)
+        data.pop("role", None)
 
         # Convert ISO strings back to datetime
         data["created_at"] = datetime.fromisoformat(data["created_at"])

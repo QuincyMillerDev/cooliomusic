@@ -19,6 +19,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from pydub import AudioSegment
+from pydub.silence import detect_leading_silence
 
 from coolio.library.storage import R2Storage
 
@@ -65,6 +66,11 @@ class MixComposer:
     DEFAULT_CROSSFADE_MS = 5000  # 5 seconds
     DEFAULT_TARGET_DBFS = -1.0  # Peak normalize to -1dB
     DEFAULT_BITRATE = "320k"
+    # Many AI tracks have long fade-ins; this trims the first track so the mix
+    # becomes audible quickly.
+    DEFAULT_TRIM_LEADING_SILENCE_FIRST_TRACK = True
+    DEFAULT_LEADING_SILENCE_THRESHOLD_DBFS = -33.0
+    DEFAULT_LEADING_SILENCE_MAX_TRIM_MS = 30_000
 
     def __init__(
         self,
@@ -73,6 +79,9 @@ class MixComposer:
         target_dbfs: float = DEFAULT_TARGET_DBFS,
         upload_to_r2: bool = True,
         auto_cleanup: bool = False,
+        trim_leading_silence_first_track: bool = DEFAULT_TRIM_LEADING_SILENCE_FIRST_TRACK,
+        leading_silence_threshold_dbfs: float = DEFAULT_LEADING_SILENCE_THRESHOLD_DBFS,
+        leading_silence_max_trim_ms: int = DEFAULT_LEADING_SILENCE_MAX_TRIM_MS,
     ) -> None:
         """Initialize the mixer.
 
@@ -82,12 +91,20 @@ class MixComposer:
             target_dbfs: Target peak level in dBFS (only if normalize=True).
             upload_to_r2: Whether to upload final mix to R2.
             auto_cleanup: Whether to delete local files after R2 upload.
+            trim_leading_silence_first_track: Trim initial near-silence from the first
+                track so the final mix starts audibly.
+            leading_silence_threshold_dbfs: Anything below this is treated as silence
+                for trimming purposes. Higher (e.g., -33) is more aggressive.
+            leading_silence_max_trim_ms: Maximum amount of leading audio to remove.
         """
         self.crossfade_ms = crossfade_ms
         self.normalize = normalize
         self.target_dbfs = target_dbfs
         self.upload_to_r2 = upload_to_r2
         self.auto_cleanup = auto_cleanup
+        self.trim_leading_silence_first_track = trim_leading_silence_first_track
+        self.leading_silence_threshold_dbfs = leading_silence_threshold_dbfs
+        self.leading_silence_max_trim_ms = leading_silence_max_trim_ms
         self._r2: R2Storage | None = None
 
     def _get_r2(self) -> R2Storage:
@@ -96,11 +113,46 @@ class MixComposer:
             self._r2 = R2Storage()
         return self._r2
 
+    def _trim_leading_silence(
+        self,
+        audio: AudioSegment,
+        *,
+        silence_threshold_dbfs: float,
+        max_trim_ms: int,
+        chunk_size_ms: int = 10,
+    ) -> tuple[AudioSegment, int]:
+        """Trim leading near-silence from an audio segment.
+
+        Returns:
+            (trimmed_audio, trimmed_ms)
+        """
+        if len(audio) <= 0:
+            return audio, 0
+
+        max_trim_ms = max(0, min(int(max_trim_ms), len(audio)))
+        if max_trim_ms == 0:
+            return audio, 0
+
+        # pydub returns the number of ms from start until audio rises above threshold.
+        trimmed_ms = int(
+            detect_leading_silence(
+                audio[:max_trim_ms],
+                silence_threshold=silence_threshold_dbfs,
+                chunk_size=chunk_size_ms,
+            )
+        )
+
+        # Clamp and guard against pathological cases.
+        trimmed_ms = max(0, min(trimmed_ms, max_trim_ms))
+        if trimmed_ms <= 0:
+            return audio, 0
+        return audio[trimmed_ms:], trimmed_ms
+
     def load_session_tracks(self, session_dir: Path) -> list[TrackInfo]:
         """Load track information from a session directory.
 
         Discovers tracks by finding MP3 files matching the pattern
-        track_XX_*.mp3 and loads their metadata from companion JSON files.
+        track_XX.mp3 or track_XX_*.mp3 and loads their metadata from companion JSON files.
 
         Args:
             session_dir: Path to the session directory.
@@ -113,8 +165,11 @@ class MixComposer:
         """
         tracks: list[TrackInfo] = []
 
-        # Find all track MP3 files (pattern: track_XX_*.mp3)
-        track_pattern = re.compile(r"track_(\d+)_.*\.mp3$")
+        # Find all track MP3 files.
+        #
+        # Historical sessions used filenames like `track_01.mp3`, while some
+        # workflows may add a suffix: `track_01_some-title.mp3`.
+        track_pattern = re.compile(r"track_(\d+)(?:_.*)?\.mp3$")
 
         for audio_path in sorted(session_dir.glob("track_*.mp3")):
             match = track_pattern.match(audio_path.name)
@@ -155,6 +210,73 @@ class MixComposer:
 
         return tracks
 
+    @staticmethod
+    def _describe_track_orders(orders: list[int]) -> str:
+        """Return a compact human-readable description of track orders."""
+        if not orders:
+            return "(none)"
+
+        sorted_orders = sorted(set(orders))
+        ranges: list[tuple[int, int]] = []
+        start = prev = sorted_orders[0]
+        for o in sorted_orders[1:]:
+            if o == prev + 1:
+                prev = o
+                continue
+            ranges.append((start, prev))
+            start = prev = o
+        ranges.append((start, prev))
+
+        parts: list[str] = []
+        for a, b in ranges:
+            parts.append(str(a) if a == b else f"{a}-{b}")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _missing_orders(orders: list[int]) -> list[int]:
+        if not orders:
+            return []
+        s = sorted(set(orders))
+        missing: list[int] = []
+        for o in range(s[0], s[-1] + 1):
+            if o not in s:
+                missing.append(o)
+        return missing
+
+    @staticmethod
+    def _only_consecutive_from_one(tracks: list[TrackInfo]) -> list[TrackInfo]:
+        """Return only consecutive tracks starting at order=1 until first gap."""
+        if not tracks:
+            return tracks
+        by_order = {t.order: t for t in tracks}
+        kept: list[TrackInfo] = []
+        expected = 1
+        while expected in by_order:
+            kept.append(by_order[expected])
+            expected += 1
+        kept.sort(key=lambda t: t.order)
+        return kept
+
+    @staticmethod
+    def _build_tracklist_text(tracks: list[TrackInfo]) -> str:
+        """Build a tracklist text block from populated TrackInfo start times."""
+        lines = ["TRACKLIST", "=" * 40, ""]
+
+        for track in tracks:
+            # Convert ms to MM:SS format
+            td = timedelta(milliseconds=track.start_time_ms)
+            total_seconds = int(td.total_seconds())
+            minutes = total_seconds // 60
+            seconds = total_seconds % 60
+            timestamp = f"{minutes:02d}:{seconds:02d}"
+
+            lines.append(f"{timestamp} - {track.title}")
+
+        lines.append("")
+        lines.append("=" * 40)
+        lines.append(f"Total tracks: {len(tracks)}")
+        return "\n".join(lines)
+
     def _normalize_audio(self, audio: AudioSegment) -> AudioSegment:
         """Normalize audio to target peak level.
 
@@ -189,6 +311,17 @@ class MixComposer:
         # Load first track
         print(f"  Loading: {tracks[0].title}")
         mixed = AudioSegment.from_mp3(tracks[0].audio_path)
+        if self.trim_leading_silence_first_track:
+            mixed, trimmed_ms = self._trim_leading_silence(
+                mixed,
+                silence_threshold_dbfs=self.leading_silence_threshold_dbfs,
+                max_trim_ms=self.leading_silence_max_trim_ms,
+            )
+            if trimmed_ms > 0:
+                print(
+                    "  Trimmed leading audio from first track: "
+                    f"{trimmed_ms}ms (threshold {self.leading_silence_threshold_dbfs} dBFS)"
+                )
         tracks[0].start_time_ms = 0
 
         current_position_ms = len(mixed)
@@ -228,23 +361,7 @@ class MixComposer:
         Returns:
             Path to the generated tracklist file.
         """
-        lines = ["TRACKLIST", "=" * 40, ""]
-
-        for track in tracks:
-            # Convert ms to MM:SS format
-            td = timedelta(milliseconds=track.start_time_ms)
-            total_seconds = int(td.total_seconds())
-            minutes = total_seconds // 60
-            seconds = total_seconds % 60
-            timestamp = f"{minutes:02d}:{seconds:02d}"
-
-            lines.append(f"{timestamp} - {track.title}")
-
-        lines.append("")
-        lines.append("=" * 40)
-        lines.append(f"Total tracks: {len(tracks)}")
-
-        content = "\n".join(lines)
+        content = self._build_tracklist_text(tracks)
         output_path.write_text(content)
 
         return output_path
@@ -255,6 +372,7 @@ class MixComposer:
         session_id: str | None = None,
         output_filename: str = "final_mix.mp3",
         tracklist_filename: str = "tracklist.txt",
+        only_consecutive: bool = False,
     ) -> MixResult:
         """Mix all tracks in a session directory.
 
@@ -279,6 +397,28 @@ class MixComposer:
 
         # Load tracks
         tracks = self.load_session_tracks(session_dir)
+        found_orders = [t.order for t in tracks]
+        missing = self._missing_orders(found_orders)
+        if missing:
+            print(
+                "Found track files with non-consecutive numbering: "
+                f"{self._describe_track_orders(found_orders)} "
+                f"(missing: {self._describe_track_orders(missing)})"
+            )
+            if only_consecutive:
+                original_count = len(tracks)
+                tracks = self._only_consecutive_from_one(tracks)
+                print(
+                    f"Mixing only consecutive tracks starting at 1: "
+                    f"{len(tracks)}/{original_count} tracks kept "
+                    f"({self._describe_track_orders([t.order for t in tracks])})"
+                )
+            else:
+                print(
+                    "Note: By default all existing track files are mixed. "
+                    "If you deleted mid-session tracks and want to stop at the first gap, "
+                    "rerun with only_consecutive=True."
+                )
 
         # Mix them
         mixed_audio = self.mix_tracks(tracks, output_path)
@@ -294,6 +434,8 @@ class MixComposer:
         # Generate tracklist
         print(f"  Writing tracklist to {tracklist_filename}...")
         self.generate_tracklist(tracks, tracklist_path)
+        print()
+        print(self._build_tracklist_text(tracks))
 
         total_duration_ms = len(mixed_audio)
         total_minutes = total_duration_ms / 60000

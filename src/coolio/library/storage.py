@@ -4,6 +4,7 @@ import json
 import logging
 import shutil
 from pathlib import Path
+from typing import Iterable
 
 import boto3
 from botocore.exceptions import ClientError
@@ -25,6 +26,67 @@ class R2Storage:
             aws_secret_access_key=s.r2_secret_access_key,
         )
         self._bucket = s.r2_bucket_name
+        self._paginator = self._client.get_paginator("list_objects_v2")
+
+    @property
+    def bucket(self) -> str:
+        """Return the configured R2 bucket name."""
+        return self._bucket
+
+    def iter_objects(self, prefix: str = "") -> Iterable[dict]:
+        """Iterate all objects in the bucket with an optional prefix.
+
+        This is a paginated iterator (unlike `list_objects`), so it can scan
+        the entire bucket safely.
+
+        Yields:
+            Object metadata dicts with keys like 'Key', 'Size', 'LastModified'.
+        """
+        try:
+            for page in self._paginator.paginate(
+                Bucket=self._bucket,
+                Prefix=prefix,
+            ):
+                for obj in page.get("Contents", []) or []:
+                    yield obj
+        except ClientError as e:
+            logger.error(f"Failed to iterate objects with prefix '{prefix}': {e}")
+            raise
+
+    def delete_objects(self, keys: list[str]) -> dict:
+        """Delete multiple objects from R2 (chunked to S3's 1000-key limit).
+
+        Args:
+            keys: Object keys to delete.
+
+        Returns:
+            Aggregate result with 'Deleted' and 'Errors' lists.
+        """
+        deleted: list[dict] = []
+        errors: list[dict] = []
+
+        if not keys:
+            return {"Deleted": deleted, "Errors": errors}
+
+        # S3 delete_objects supports at most 1000 objects per call.
+        chunk_size = 1000
+        for i in range(0, len(keys), chunk_size):
+            chunk = keys[i : i + chunk_size]
+            try:
+                resp = self._client.delete_objects(
+                    Bucket=self._bucket,
+                    Delete={
+                        "Objects": [{"Key": k} for k in chunk],
+                        "Quiet": True,
+                    },
+                )
+                deleted.extend(resp.get("Deleted", []) or [])
+                errors.extend(resp.get("Errors", []) or [])
+            except ClientError as e:
+                logger.error(f"Failed to delete objects batch ({len(chunk)} keys): {e}")
+                raise
+
+        return {"Deleted": deleted, "Errors": errors}
 
     def upload_file(self, local_path: Path, r2_key: str) -> str:
         """Upload a file to R2.
@@ -153,69 +215,6 @@ class R2Storage:
             if e.response["Error"]["Code"] == "404":
                 return False
             raise
-
-    def upload_image(self, local_path: Path, session_id: str) -> str:
-        """Upload a session thumbnail image to R2.
-
-        Args:
-            local_path: Path to the local image file (PNG).
-            session_id: Session identifier for organizing storage.
-
-        Returns:
-            The R2 key on success (sessions/{session_id}/thumbnail.png).
-
-        Raises:
-            ClientError: If upload fails.
-        """
-        r2_key = f"sessions/{session_id}/thumbnail.png"
-
-        # Determine content type from extension
-        suffix = local_path.suffix.lower()
-        content_type = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-        }.get(suffix, "application/octet-stream")
-
-        try:
-            with open(local_path, "rb") as f:
-                self._client.put_object(
-                    Bucket=self._bucket,
-                    Key=r2_key,
-                    Body=f,
-                    ContentType=content_type,
-                )
-            logger.info(f"Uploaded {local_path.name} -> r2://{self._bucket}/{r2_key}")
-            return r2_key
-        except ClientError as e:
-            logger.error(f"Failed to upload image {local_path}: {e}")
-            raise
-
-    def download_thumbnail(self, session_id: str, dest_dir: Path) -> Path | None:
-        """Download a session thumbnail from R2 if it exists.
-
-        Args:
-            session_id: Session identifier.
-            dest_dir: Local directory to save the thumbnail.
-
-        Returns:
-            Path to downloaded thumbnail, or None if not found in R2.
-        """
-        r2_key = f"sessions/{session_id}/thumbnail.png"
-
-        if not self.exists(r2_key):
-            logger.info(f"No thumbnail found in R2 for session {session_id}")
-            return None
-
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        local_path = dest_dir / f"{session_id}_thumbnail.png"
-
-        try:
-            self.download_file(r2_key, local_path)
-            return local_path
-        except ClientError as e:
-            logger.error(f"Failed to download thumbnail for {session_id}: {e}")
-            return None
 
     # -------------------------------------------------------------------------
     # Session Storage Methods
@@ -352,124 +351,6 @@ class R2Storage:
             if e.response["Error"]["Code"] == "NoSuchKey":
                 return None
             raise
-
-    def upload_video(
-        self,
-        video_path: Path,
-        session_id: str,
-    ) -> str:
-        """Upload final video to R2.
-
-        Args:
-            video_path: Path to the final video file (MP4).
-            session_id: Session identifier.
-
-        Returns:
-            The R2 key on success (sessions/{session_id}/video/final_video.mp4).
-
-        Raises:
-            ClientError: If upload fails.
-        """
-        r2_key = f"sessions/{session_id}/video/final_video.mp4"
-
-        try:
-            with open(video_path, "rb") as f:
-                self._client.put_object(
-                    Bucket=self._bucket,
-                    Key=r2_key,
-                    Body=f,
-                    ContentType="video/mp4",
-                )
-            logger.info(f"Uploaded video -> r2://{self._bucket}/{r2_key}")
-            return r2_key
-        except ClientError as e:
-            logger.error(f"Failed to upload video: {e}")
-            raise
-
-    def upload_youtube_metadata(
-        self,
-        json_path: Path,
-        txt_path: Path,
-        session_id: str,
-    ) -> dict[str, str]:
-        """Upload YouTube metadata files to R2.
-
-        Args:
-            json_path: Path to youtube_metadata.json file.
-            txt_path: Path to youtube_metadata.txt file.
-            session_id: Session identifier.
-
-        Returns:
-            Dict with 'json_key' and 'txt_key' on success.
-        """
-        result: dict[str, str] = {}
-
-        # Upload JSON metadata
-        if json_path.exists():
-            json_key = f"sessions/{session_id}/metadata/youtube_metadata.json"
-            try:
-                with open(json_path, "rb") as f:
-                    self._client.put_object(
-                        Bucket=self._bucket,
-                        Key=json_key,
-                        Body=f,
-                        ContentType="application/json",
-                    )
-                logger.info(f"Uploaded YouTube metadata JSON -> r2://{self._bucket}/{json_key}")
-                result["json_key"] = json_key
-            except ClientError as e:
-                logger.warning(f"Failed to upload YouTube metadata JSON: {e}")
-
-        # Upload TXT metadata
-        if txt_path.exists():
-            txt_key = f"sessions/{session_id}/metadata/youtube_metadata.txt"
-            try:
-                with open(txt_path, "rb") as f:
-                    self._client.put_object(
-                        Bucket=self._bucket,
-                        Key=txt_key,
-                        Body=f,
-                        ContentType="text/plain",
-                    )
-                logger.info(f"Uploaded YouTube metadata TXT -> r2://{self._bucket}/{txt_key}")
-                result["txt_key"] = txt_key
-            except ClientError as e:
-                logger.warning(f"Failed to upload YouTube metadata TXT: {e}")
-
-        return result
-
-    def upload_optimized_thumbnail(
-        self,
-        thumbnail_path: Path,
-        session_id: str,
-    ) -> str | None:
-        """Upload an optimized thumbnail (upload_ready version) to R2.
-
-        Args:
-            thumbnail_path: Path to the optimized thumbnail file.
-            session_id: Session identifier.
-
-        Returns:
-            The R2 key on success, None if file doesn't exist.
-        """
-        if not thumbnail_path.exists():
-            return None
-
-        r2_key = f"sessions/{session_id}/thumbnail_upload_ready.jpg"
-
-        try:
-            with open(thumbnail_path, "rb") as f:
-                self._client.put_object(
-                    Bucket=self._bucket,
-                    Key=r2_key,
-                    Body=f,
-                    ContentType="image/jpeg",
-                )
-            logger.info(f"Uploaded optimized thumbnail -> r2://{self._bucket}/{r2_key}")
-            return r2_key
-        except ClientError as e:
-            logger.warning(f"Failed to upload optimized thumbnail: {e}")
-            return None
 
     @staticmethod
     def delete_local_session(session_dir: Path) -> bool:

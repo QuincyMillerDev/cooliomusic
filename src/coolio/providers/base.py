@@ -29,14 +29,12 @@ class GeneratedTrack:
 
     order: int
     title: str  # Human-readable track name
-    role: str
     prompt: str
     duration_ms: int
     audio_path: Path
     metadata_path: Path
     provider: str
-    bpm: int
-    energy: int
+    bpm: int | None = None  # Optional: for informational use only
 
 
 @runtime_checkable
@@ -56,9 +54,7 @@ class MusicProvider(Protocol):
         filename_base: str,
         order: int = 1,
         title: str = "Untitled",
-        role: str = "track",
-        bpm: int = 120,
-        energy: int = 5,
+        bpm: int | None = None,
     ) -> GeneratedTrack:
         """Generate a track from a prompt.
 
@@ -69,9 +65,7 @@ class MusicProvider(Protocol):
             filename_base: Base name for output files (without extension).
             order: Track order number for metadata.
             title: Human-readable track name.
-            role: Track role for metadata (intro, build, peak, etc.).
-            bpm: Target BPM for the track.
-            energy: Energy level 1-10.
+            bpm: Optional BPM for informational use (not used for generation).
 
         Returns:
             GeneratedTrack with paths to saved audio and metadata files.

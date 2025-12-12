@@ -205,9 +205,7 @@ class ElevenLabsProvider:
         filename_base: str,
         order: int = 1,
         title: str = "Untitled",
-        role: str = "track",
-        bpm: int = 120,
-        energy: int = 5,
+        bpm: int | None = None,
     ) -> GeneratedTrack:
         """Generate a track using ElevenLabs SDK.
 
@@ -218,9 +216,7 @@ class ElevenLabsProvider:
             filename_base: Base name for files (without extension).
             order: Track order number.
             title: Human-readable track name.
-            role: Track role (intro, build, peak, etc.).
-            bpm: Target BPM for the track.
-            energy: Energy level 1-10.
+            bpm: Optional BPM for informational use.
 
         Returns:
             GeneratedTrack with paths to saved files.
@@ -248,14 +244,14 @@ class ElevenLabsProvider:
         metadata = {
             "order": order,
             "title": title,
-            "role": role,
             "prompt": final_prompt,  # Use final prompt (may be suggested)
             "original_prompt": prompt if final_prompt != prompt else None,
             "duration_ms": duration_ms,
-            "bpm": bpm,
-            "energy": energy,
             "provider": "elevenlabs",
         }
+        if bpm is not None:
+            metadata["bpm"] = bpm
+            
         with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
@@ -264,14 +260,12 @@ class ElevenLabsProvider:
         return GeneratedTrack(
             order=order,
             title=title,
-            role=role,
             prompt=final_prompt,
             duration_ms=duration_ms,
             audio_path=audio_path,
             metadata_path=metadata_path,
             provider="elevenlabs",
             bpm=bpm,
-            energy=energy,
         )
 
 

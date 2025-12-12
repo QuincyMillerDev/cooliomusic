@@ -61,9 +61,7 @@ class StableAudioProvider:
         filename_base: str,
         order: int = 1,
         title: str = "Untitled",
-        role: str = "track",
-        bpm: int = 120,
-        energy: int = 5,
+        bpm: int | None = None,
     ) -> GeneratedTrack:
         """Generate a track using Stable Audio API.
 
@@ -74,9 +72,7 @@ class StableAudioProvider:
             filename_base: Base name for files (without extension).
             order: Track order number.
             title: Human-readable track name.
-            role: Track role (intro, build, peak, etc.).
-            bpm: Target BPM for the track.
-            energy: Energy level 1-10.
+            bpm: Optional BPM for informational use.
 
         Returns:
             GeneratedTrack with paths to saved files.
@@ -131,16 +127,14 @@ class StableAudioProvider:
         metadata: dict[str, Any] = {
             "order": order,
             "title": title,
-            "role": role,
             "prompt": prompt,
             "duration_ms": duration_ms,
-            "bpm": bpm,
-            "energy": energy,
             "provider": "stable_audio",
             "model": self._model,
-            "composition_plan": None,
-            "song_metadata": None,
         }
+        if bpm is not None:
+            metadata["bpm"] = bpm
+            
         with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
@@ -149,14 +143,12 @@ class StableAudioProvider:
         return GeneratedTrack(
             order=order,
             title=title,
-            role=role,
             prompt=prompt,
             duration_ms=duration_ms,
             audio_path=audio_path,
             metadata_path=metadata_path,
             provider="stable_audio",
             bpm=bpm,
-            energy=energy,
         )
 
 

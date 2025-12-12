@@ -18,14 +18,14 @@ logger = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT_TEMPLATE = """
-<dj_identity>
-You are a DJ building a set for a productivity music channel. You understand tempo, energy, and flow dynamics intuitively. Trust your instincts on BPM choices - dramatic shifts can be as effective as smooth transitions.
+<curator_identity>
+You are a music curator building playlists for a productivity music channel. Your goal is to create varied, high-quality playlists that maintain listener engagement through natural variety in mood and intensity.
 
 PRIORITIES (in order):
 1. Hit duration target (±5 min)
 2. Maximize library reuse (FREE tracks save money)
-3. Craft compelling flow - you own the tempo/energy journey
-</dj_identity>
+3. Create natural variety - vary mood and intensity across tracks
+</curator_identity>
 
 <library_reuse>
 Use 30-50% of available library tracks as anchors. Only reject if it's a true vibe killer. Generate new tracks to bridge gaps between anchors. Document decisions in "reasoning.library_analysis".
@@ -67,75 +67,43 @@ REQUIRED AESTHETIC:
 
 {provider_rules}
 
-<energy_arc>
-Build a DJ set, not a soundtrack. Aim for 2 peak moments per hour. Intro/outro can be lower energy (3-4), but maintain momentum in between (5-7 range). Avoid wild swings - transitions should feel intentional.
-</energy_arc>
+<playlist_variety>
+Create natural variety across the playlist. Vary mood, intensity, and texture naturally:
+- Mix driving tracks with atmospheric ones
+- Balance tension with release
+- Use the full palette of the genre without explicit "roles"
+- Trust your instincts on what makes a compelling sequence
+</playlist_variety>
 
 <prompting_format>
-STRUCTURE (follow this template for ALL prompts):
-"Create a [mood/energy] [genre] track for [use-case context]. Use [3-5 specific instruments/textures with production details]. Tempo: [BPM] with [groove characteristic]. Include: [2-3 positive style descriptors]. Exclude: [2-3 negative descriptors, always 'no vocals']."
+Write prompts like a human producer, not a checklist.
 
-BAD: "Techno for studying"
-BAD: "Deep house at 120 BPM, warm pads, soft kick. No vocals."
+Make each prompt descriptive but NOT over-specified. Avoid rigid templates, BPM math,
+and detailed drum programming unless the concept explicitly calls for it.
 
-GOOD: "Create a hypnotic, flowing deep house track for late-night focus sessions. Use four-on-the-floor kick with soft attack and long decay, shuffling hi-hats with 16th-note swing, detuned synth stabs through low-pass filter, sub-bass pulse locked to kick, and distant Rhodes chords with tape saturation. Tempo: 120 BPM with relaxed groove. Include: vinyl warmth, room reverb, hypnotic repetition. Exclude: vocals, sudden transitions, melodic hooks, harsh frequencies."
+Aim for:
+- 1–2 sentences: mood/style + genre + use-case context
+- 0–2 optional lines: Include: ... / Exclude: ...
+- 2–4 instruments/textures MAX (don’t force drums into every prompt)
+
+Default percussion behavior:
+- If the concept does not explicitly ask for percussion-forward music, keep drums
+  subtle/supportive or omit them entirely. Prefer texture, harmony, and gentle movement.
 </prompting_format>
 
-<role_specific_prompting>
-Match prompt style to track role:
-
-INTRO (energy 2-4): Atmosphere-first. Sparse elements, heavy filtering, gradual reveals.
-  Keywords: "filtered", "distant", "emerging", "spacious", "gradual entry"
-  Example suffix: "Elements should emerge gradually from silence with extended filter sweeps."
-
-BUILD (energy 4-6): Momentum and layering. Add tension without release.
-  Keywords: "layering", "rising", "tension", "progression", "adding elements"
-  Example suffix: "Gradually introduce new layers every 16 bars, building anticipation."
-
-PEAK (energy 6-7): Full energy, all elements present. Driving but controlled.
-  Keywords: "driving", "full", "locked-in", "powerful", "maximum groove"
-  Example suffix: "Full instrumentation with punchy transients and powerful groove."
-
-SUSTAIN (energy 5-6): Hypnotic plateau. Maintain energy through repetition.
-  Keywords: "hypnotic", "locked", "repetitive", "subtle variation", "groove-focused"
-  Example suffix: "Hypnotic and repetitive with only subtle filter movement for variation."
-
-WIND_DOWN (energy 4-5): Graceful descent. Thin layers, soften attacks.
-  Keywords: "thinning", "softening", "releasing", "filter closing", "fading elements"
-  Example suffix: "Gradually remove layers and soften transients, filter sweeping down."
-
-OUTRO (energy 2-3): Resolution and dissolution. Minimal, ambient tail.
-  Keywords: "dissolving", "ambient", "spacious reverb", "fading", "minimal"
-  Example suffix: "Elements fade into reverb tails, leaving only atmosphere."
-</role_specific_prompting>
-
 <audio_vocabulary>
-Use precise production terminology:
+Use natural production terminology, but only when it helps.
 
-DRUMS/PERCUSSION:
-  Kicks: four-on-the-floor, soft attack, punchy transient, sidechained, long decay
-  Hi-hats: shuffling, 16th-note, open/closed, swing, brushed
-  Snares/Claps: rim shot, ghost notes, brushed, snappy, layered clap
-  Other: shaker, tambourine, conga, bongo, percussion loop
+PREFERRED (texture/mix-first):
+- Space: room/plate reverb, long tails, delay washes, distant ambience
+- Warmth: tape saturation, gentle compression, soft clipping (avoid harshness)
+- Motion: slow filter movement, tremolo, subtle modulation, evolving pads
+- Harmony/tones: electric piano, soft synth pads, mellow stabs, airy plucks
 
-BASS:
-  Types: sub-bass, plucked bass, rolling bassline, filtered bass stab
-  Character: rumbling, growling, warm, round, tight, locked to kick
+OPTIONAL (rhythm, only if relevant):
+- Percussion: soft hats, brushed percussion, light rim clicks, minimal groove
 
-SYNTHS/KEYS:
-  Types: analog pad, Rhodes, Wurlitzer, organ stab, synth arpeggio
-  Processing: detuned, filtered, low-pass sweep, high-pass filter, chorus
-  Character: warm, cold, ethereal, distant, present
-
-TEXTURES/EFFECTS:
-  Warmth: tape saturation, vinyl crackle, analog warmth, tube compression
-  Space: room reverb, plate reverb, hall reverb, delay throws
-  Movement: filter sweep, phaser, tremolo, stereo widening
-  Noise: white noise, pink noise, hiss, atmospheric texture
-
-STRUCTURE TERMS:
-  Timing: every 4 bars, every 8 bars, at 32 bars, gradual over 16 bars
-  Dynamics: sidechain compression, ducking, pumping, breathing
+Avoid heavy transient-forward drums unless explicitly requested.
 </audio_vocabulary>
 
 <output_schema>
@@ -144,21 +112,17 @@ Return valid JSON with reasoning fields to show your work:
 {{
   "reasoning": {{
     "library_analysis": [
-      {{"track_id": "abc123", "decision": "KEEP", "placement": "track 3", "rationale": "BPM 118 fits, energy 5 works for build"}},
+      {{"track_id": "abc123", "decision": "KEEP", "placement": "track 3", "rationale": "Fits the mood, good variety"}},
       {{"track_id": "def456", "decision": "REJECT", "rationale": "Genre mismatch - ambient doesn't fit synthfunk"}}
     ],
     "duration_math": "60 min target - 8.5 min library = 51.5 min to generate = ~17 new tracks",
     "name_audit": "Checked all titles against banned words - clear"
   }},
   "genre": "string",
-  "bpm_range": [min, max],
   "slots": [
     {{
       "order": 1,
-      "role": "intro|build|peak|sustain|wind_down|outro",
       "duration_ms": 145000,
-      "bpm_target": 120,
-      "energy": 3,
       "source": "library",
       "track_id": "abc123",
       "track_genre": "techno",
@@ -166,10 +130,7 @@ Return valid JSON with reasoning fields to show your work:
     }},
     {{
       "order": 2,
-      "role": "build",
       "duration_ms": 165000,
-      "bpm_target": 122,
-      "energy": 5,
       "source": "generate",
       "title": "new track name",
       "provider": "stable_audio",
@@ -194,8 +155,8 @@ DURATION LIMITS:
 
 DURATION VARIETY (Critical):
 - Do NOT make all tracks 3:00. Mix lengths: 2:15, 2:40, 2:55, 3:10, 4:00
-- Intros/outros: shorter (120-150s)
-- Peaks/sustains: can be longer (180-240s)
+- Shorter tracks: good for transitions or interludes (120-150s)
+- Longer tracks: can build more atmosphere (180-240s)
 </provider_rules>"""
 
 PROVIDER_RULES_STABLE_AUDIO = """<provider_rules>
@@ -272,9 +233,6 @@ def generate_session_plan(
                 "id": t.track_id,
                 "title": t.title,
                 "genre": t.genre,
-                "bpm": t.bpm,
-                "energy": t.energy,
-                "role": t.role,
                 "duration_ms": t.duration_ms,
                 "last_used": t.last_used_at.isoformat() if t.last_used_at else "never"
             }
@@ -308,6 +266,12 @@ After placing library anchors, generate new tracks to fill remaining time.
 - Provider: {provider}
 - Cost: {cost_info}
 - Max duration per track: {max_duration_sec} seconds
+
+Create natural variety:
+- Vary mood and intensity across tracks
+- Mix driving tracks with atmospheric ones
+- Balance tension with release
+- Trust your instincts on what makes a compelling sequence
 
 === STEP 3: VERIFY ===
 - Total duration must be {target_duration_minutes} min ±5
@@ -350,7 +314,6 @@ Remember: Titles must NOT reference the concept. No "Neon", "Cyber", "Arcade", e
         data = json.loads(content)
         genre = data.get("genre", "electronic")
         slots_data = data.get("slots", [])
-        bpm_range = data.get("bpm_range", [120, 130])
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON from planner: {e}")
 
@@ -358,10 +321,7 @@ Remember: Titles must NOT reference the concept. No "Neon", "Cyber", "Arcade", e
     for s_data in slots_data:
         slot = TrackSlot(
             order=s_data["order"],
-            role=s_data["role"],
             duration_ms=s_data["duration_ms"],
-            bpm_target=s_data["bpm_target"],
-            energy=s_data["energy"],
             source=s_data["source"],
             track_id=s_data.get("track_id"),
             track_genre=s_data.get("track_genre"),
@@ -375,7 +335,6 @@ Remember: Titles must NOT reference the concept. No "Neon", "Cyber", "Arcade", e
         concept=concept,
         genre=genre,
         target_duration_minutes=target_duration_minutes,
-        bpm_range=tuple(bpm_range),  # type: ignore[arg-type]
         slots=slots,
         model_used=model,
     )

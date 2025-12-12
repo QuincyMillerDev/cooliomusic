@@ -7,6 +7,11 @@ from coolio.library.storage import R2Storage
 
 logger = logging.getLogger(__name__)
 
+# Keep the planner prompt bounded even if the library grows large.
+# We still scan the whole library so recency exclusion has full visibility,
+# then return a capped set of best candidates for the planner to consider.
+_MAX_CANDIDATES_FOR_PLANNER = 200
+
 
 class LibraryQuery:
     """Handles querying and filtering tracks from the R2 library."""
@@ -27,14 +32,17 @@ class LibraryQuery:
         logger.info(f"Querying library for all tracks (prefix: {prefix})...")
 
         try:
-            # List all JSON files in the tracks directory
-            objects = self.storage.list_objects(prefix=prefix, max_keys=1000)
-            json_keys = [obj["Key"] for obj in objects if obj["Key"].endswith(".json")]
+            # List all JSON files in the tracks directory (paginated).
+            json_keys: list[str] = []
+            for obj in self.storage.iter_objects(prefix=prefix):
+                key = obj.get("Key")
+                if key and key.endswith(".json"):
+                    json_keys.append(key)
         except Exception as e:
             logger.error(f"Failed to list library objects: {e}")
             return []
 
-        candidates = []
+        candidates: list[TrackMetadata] = []
         cutoff_date = datetime.now() - timedelta(days=exclude_days)
 
         for key in json_keys:
@@ -60,8 +68,24 @@ class LibraryQuery:
                 logger.warning(f"Failed to process track metadata at {key}: {e}")
                 continue
 
+        total = len(candidates)
+
+        # Prefer tracks that have never been used, then least-recently-used.
+        # This reduces repetition across sessions while staying simple.
+        candidates.sort(
+            key=lambda t: (
+                t.last_used_at is not None,
+                t.last_used_at or datetime.min,
+                t.created_at,
+            )
+        )
+
+        if total > _MAX_CANDIDATES_FOR_PLANNER:
+            candidates = candidates[:_MAX_CANDIDATES_FOR_PLANNER]
+
         logger.info(
-            f"Found {len(candidates)} ElevenLabs tracks available for reuse"
+            f"Found {total} ElevenLabs tracks available for reuse "
+            f"(returning {len(candidates)} for planner)"
         )
         return candidates
 

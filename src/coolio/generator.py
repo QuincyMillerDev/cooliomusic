@@ -56,6 +56,7 @@ class SessionAbortError(Exception):
 # ElevenLabs Music API hard limit: 10000ms to 300000ms (10s to 5min)
 # https://elevenlabs.io/docs/api-reference/music-generation
 ELEVENLABS_MAX_DURATION_MS = 300_000
+TEST_TRACK_DURATION_MS = 150_000
 
 
 class GenerationSession:
@@ -176,6 +177,67 @@ class MusicGenerator:
             raise ValueError(f"Unknown provider '{name}'. Available: {available}")
         return self._providers[name]
 
+    def generate_test_track(self, concept: str) -> GeneratedTrack:
+        """Generate a single local-only test track.
+
+        This generates a *planner-style* prompt (via OpenRouter) and then uses
+        the selected provider to render a single track locally. It writes a
+        flat mp3/json pair into `output/test/` (relative to the configured
+        output directory) and never uploads to R2.
+
+        Args:
+            concept: Free-form concept describing genre/vibe/purpose.
+
+        Returns:
+            GeneratedTrack for the generated file.
+        """
+        provider_name = self._provider_override or "elevenlabs"
+        provider = self.get_provider(provider_name)
+
+        # Default output_dir is output/audio -> test output becomes output/test
+        test_dir = self.output_dir.parent / "test"
+        test_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename_base = f"test_track_{ts}"
+        title = f"Test Track {ts}"
+
+        # Use the session planner to generate a realistic, production-quality prompt.
+        # We do not include any library candidates for test tracks.
+        from coolio.djcoolio import generate_session_plan
+
+        target_minutes = max(2, round(TEST_TRACK_DURATION_MS / 60000))
+        plan = generate_session_plan(
+            concept=concept,
+            candidates=[],
+            target_duration_minutes=target_minutes,
+            model=None,
+            provider=provider_name,
+        )
+
+        generation_slots = [s for s in plan.slots if s.source == "generate" and s.prompt]
+        if not generation_slots:
+            raise ValueError("Planner returned no generation slots for test track prompt")
+
+        # Pick the slot closest to our test duration (planner may propose 2–5 min slots).
+        best_slot = min(
+            generation_slots,
+            key=lambda s: abs(int(s.duration_ms) - TEST_TRACK_DURATION_MS),
+        )
+
+        prompt = best_slot.prompt or concept
+        if best_slot.title:
+            title = best_slot.title
+
+        return provider.generate(
+            prompt=prompt,
+            duration_ms=TEST_TRACK_DURATION_MS,
+            output_dir=test_dir,
+            filename_base=filename_base,
+            order=1,
+            title=title,
+        )
+
     def _generate_track(
         self,
         slot: TrackSlot,
@@ -211,35 +273,29 @@ class MusicGenerator:
             slot.provider = "stable_audio"
 
         provider = self.get_provider(provider_name)
-        filename_base = f"track_{slot.order:02d}_{slot.role}"
+        filename_base = f"track_{slot.order:02d}"
 
         # ElevenLabs: no retry (burns credits on each attempt)
         # Stable Audio: retry OK (flat rate per track)
         if provider_name == "elevenlabs":
             return provider.generate(
-                prompt=slot.prompt or f"{slot.role} track",
+                prompt=slot.prompt or "Music track",
                 duration_ms=slot.duration_ms,
                 output_dir=session_dir,
                 filename_base=filename_base,
                 order=slot.order,
                 title=slot.title or f"Track {slot.order}",
-                role=slot.role,
-                bpm=slot.bpm_target,
-                energy=slot.energy,
             )
         else:
             # Stable Audio can retry safely
             def do_generate() -> GeneratedTrack:
                 return provider.generate(
-                    prompt=slot.prompt or f"{slot.role} track",
+                    prompt=slot.prompt or "Music track",
                     duration_ms=slot.duration_ms,
                     output_dir=session_dir,
                     filename_base=filename_base,
                     order=slot.order,
                     title=slot.title or f"Track {slot.order}",
-                    role=slot.role,
-                    bpm=slot.bpm_target,
-                    energy=slot.energy,
                 )
 
             return self._with_retry(
@@ -277,13 +333,11 @@ class MusicGenerator:
             metadata = TrackMetadata.create(
                 title=track.title,
                 genre=genre,
-                bpm=track.bpm,
                 duration_ms=track.duration_ms,
-                energy=track.energy,
-                role=track.role,
                 provider=track.provider,
                 prompt=slot.prompt or "",
                 session_id=session_id,
+                bpm=track.bpm,
             )
 
             # Upload audio and metadata
@@ -334,7 +388,8 @@ class MusicGenerator:
         track_key = f"library/tracks/{genre}/{slot.track_id}.mp3"
         metadata_key = f"library/tracks/{genre}/{slot.track_id}.json"
 
-        filename_base = f"track_{slot.order:02d}_{slot.role}_reused"
+        # Avoid relying on non-existent/optional slot attributes (keep filenames stable).
+        filename_base = f"track_{slot.order:02d}_reused"
         local_audio_path = session_dir / f"{filename_base}.mp3"
         local_metadata_path = session_dir / f"{filename_base}.json"
 
@@ -351,9 +406,18 @@ class MusicGenerator:
         # 3. Read and update usage metadata in R2
         data = r2.read_json(metadata_key)
         meta = TrackMetadata.from_dict(data)
+        prev_last_used_at = meta.last_used_at
+        prev_usage_count = meta.usage_count
         meta.mark_used()
         r2.upload_json(meta.to_dict(), metadata_key)
-        logger.info(f"Updated usage stats for track {slot.track_id}")
+        logger.info(
+            "Updated usage stats for track %s (last_used_at: %s -> %s, usage_count: %s -> %s)",
+            slot.track_id,
+            prev_last_used_at.isoformat() if prev_last_used_at else "never",
+            meta.last_used_at.isoformat() if meta.last_used_at else "unknown",
+            prev_usage_count,
+            meta.usage_count,
+        )
 
         # 4. Save a local copy of metadata for session records
         with open(local_metadata_path, "w") as f:
@@ -363,14 +427,12 @@ class MusicGenerator:
         return GeneratedTrack(
             order=slot.order,
             title=meta.title,
-            role=slot.role,
             prompt=meta.prompt_hash,  # Original prompt not stored, use hash
             duration_ms=meta.duration_ms,
             audio_path=local_audio_path,
             metadata_path=local_metadata_path,
             provider=meta.provider,
             bpm=meta.bpm,
-            energy=meta.energy,
         )
 
     def execute_plan(
@@ -407,7 +469,7 @@ class MusicGenerator:
         actual_cost = 0.0
 
         for slot in plan.slots:
-            print(f"Track {slot.order}/{len(plan.slots)}: [{slot.role.upper()}] ", end="")
+            print(f"Track {slot.order}/{len(plan.slots)}: ", end="")
 
             try:
                 if slot.source == "library":
@@ -454,11 +516,8 @@ class MusicGenerator:
             track_references.append({
                 "track_id": meta.track_id,
                 "title": meta.title,
-                "role": meta.role,
                 "genre": meta.genre,
-                "bpm": meta.bpm,
                 "duration_ms": meta.duration_ms,
-                "energy": meta.energy,
                 "provider": meta.provider,
             })
 
@@ -468,7 +527,6 @@ class MusicGenerator:
             "genre": plan.genre,
             "model_used": plan.model_used,
             "target_duration_minutes": plan.target_duration_minutes,
-            "bpm_range": list(plan.bpm_range),
             "total_slots": len(plan.slots),
             "final_track_count": len(final_tracks),
             "reused_count": reused_count,
@@ -569,9 +627,6 @@ class MusicGenerator:
                 slot = TrackSlot(
                     order=order,
                     source="generate",  # Force regeneration
-                    role=slot_data.get("role", "body"),
-                    bpm_target=slot_data.get("bpm_target", 120),
-                    energy=slot_data.get("energy", 5),
                     duration_ms=slot_data.get("duration_ms", 180000),
                     prompt=slot_data.get("prompt"),
                     provider=self._provider_override or slot_data.get("provider", "elevenlabs"),
@@ -614,11 +669,8 @@ class MusicGenerator:
                     new_track_refs.append({
                         "track_id": meta.track_id,
                         "title": meta.title,
-                        "role": meta.role,
                         "genre": meta.genre,
-                        "bpm": meta.bpm,
                         "duration_ms": meta.duration_ms,
-                        "energy": meta.energy,
                         "provider": meta.provider,
                     })
 

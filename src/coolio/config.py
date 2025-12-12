@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     # OpenRouter (OpenAI-compatible API for multi-model support)
     openrouter_api_key: str = Field(..., alias="OPENROUTER_API_KEY")
     openrouter_model: str = Field(
-        default="anthropic/claude-opus-4.5",
+        default="openai/gpt-5.2",
         alias="OPENROUTER_MODEL",
     )
     openrouter_base_url: str = Field(
@@ -38,18 +38,6 @@ class Settings(BaseSettings):
     r2_endpoint_url: str = Field(
         default="https://ccbe407ceb8cc78fc1ec28cbb02894b0.r2.cloudflarestorage.com",
         alias="R2_ENDPOINT_URL",
-    )
-
-    # Kling AI (Video Generation)
-    kling_ai_access_key: str = Field(..., alias="KLING_AI_ACCESS_KEY")
-    kling_ai_secret_key: str = Field(..., alias="KLING_AI_SECRET_KEY")
-    klingai_base_url: str = Field(
-        default="https://api-singapore.klingai.com",
-        alias="KLINGAI_BASE_URL",
-    )
-    klingai_model: str = Field(
-        default="kling-v2-5-turbo",
-        alias="KLINGAI_MODEL",
     )
 
     # Output settings

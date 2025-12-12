@@ -13,33 +13,27 @@ from typing import Literal
 class TrackSlot:
     """A single slot in a session plan.
 
-    This unified model replaces the previous TrackPlan (Generator) and
-    CurationSlot (Curator) dataclasses. It supports both library reuse
-    and new generation in a single structure.
+    This unified model supports both library reuse and new generation
+    in a single structure.
 
     Attributes:
         order: Position in the tracklist (1-indexed).
-        role: Track role (intro, build, peak, sustain, cooldown, outro).
         duration_ms: Target duration in milliseconds.
-        bpm_target: Target BPM for flow coherence.
-        energy: Energy level on 1-10 scale.
         source: Whether to reuse from library or generate new.
         track_id: R2 track ID (required if source="library").
+        track_genre: Original genre folder where track is stored (for library tracks).
         title: Human-readable track name.
         prompt: Generation prompt (required if source="generate").
         provider: Music provider ("elevenlabs" or "stable_audio").
     """
 
     order: int
-    role: str  # intro, build, peak, sustain, cooldown, outro
     duration_ms: int
-    bpm_target: int
-    energy: int  # 1-10 scale
     source: Literal["library", "generate"]
 
     # For library tracks (source="library")
     track_id: str | None = None
-    track_genre: str | None = None  # Original genre folder where track is stored
+    track_genre: str | None = None
 
     # For generation (source="generate") or library tracks with known title
     title: str | None = None
@@ -73,7 +67,6 @@ class SessionPlan:
     concept: str  # Original user concept/prompt
     genre: str  # Primary genre for the session
     target_duration_minutes: int
-    bpm_range: tuple[int, int]  # (min_bpm, max_bpm)
     slots: list[TrackSlot] = field(default_factory=list)
     model_used: str = ""
 
