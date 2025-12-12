@@ -493,6 +493,7 @@ def models():
         ("anthropic/claude-opus-4.5", "Anthropic", "Expensive, reliable, great reasoning"),
         ("openai/gpt-5.2", "OpenAI", "Latest GPT, excellent structured output"),
         ("google/gemini-3-pro-preview", "Google", "Fast, good value"),
+        ("moonshotai/kimi-k2-thinking", "MoonshotAI", "Reasoning-heavy; try for planning quality"),
     ]
 
     for model_id, provider, notes in models_list:

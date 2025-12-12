@@ -86,6 +86,13 @@ Aim for:
 - 0–2 optional lines: Include: ... / Exclude: ...
 - 2–4 instruments/textures MAX (don’t force drums into every prompt)
 
+HIGH-LEVERAGE RULE (read carefully):
+- Describe the FEEL and MOTION (tension/release, energy curve, texture, space) more than the instruments.
+- Do NOT name specific drum elements (kick, hats, snare, clap, 909/808, rimshot, ghost notes)
+  unless the user's concept explicitly requests percussion-forward music.
+- If rhythm is relevant, describe it as a feel: "subtle propulsion", "steady pulse", "gentle groove",
+  "hypnotic forward motion" — not as a drum list.
+
 Default percussion behavior:
 - If the concept does not explicitly ask for percussion-forward music, keep drums
   subtle/supportive or omit them entirely. Prefer texture, harmony, and gentle movement.
@@ -99,9 +106,12 @@ PREFERRED (texture/mix-first):
 - Warmth: tape saturation, gentle compression, soft clipping (avoid harshness)
 - Motion: slow filter movement, tremolo, subtle modulation, evolving pads
 - Harmony/tones: electric piano, soft synth pads, mellow stabs, airy plucks
+- Energy/arc: restrained build, slow bloom, gliding transitions, tension then soft release
+- Feel words: weightless, grounded, elastic, hazy, clean, intimate, wide, submerged
 
 OPTIONAL (rhythm, only if relevant):
-- Percussion: soft hats, brushed percussion, light rim clicks, minimal groove
+- Rhythm feel (preferred): subtle propulsion, steady pulse, gentle groove, patient momentum
+- Percussion (only if explicitly requested): soft percussion, minimal groove
 
 Avoid heavy transient-forward drums unless explicitly requested.
 </audio_vocabulary>

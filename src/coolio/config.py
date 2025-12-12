@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     # OpenRouter (OpenAI-compatible API for multi-model support)
     openrouter_api_key: str = Field(..., alias="OPENROUTER_API_KEY")
     openrouter_model: str = Field(
-        default="google/gemini-3-pro-preview",
+        default="anthropic/claude-opus-4.5",
         alias="OPENROUTER_MODEL",
     )
     openrouter_youtube_metadata_model: str = Field(
