@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
+from typing import Any, cast
 
 
 class VideoLoopError(RuntimeError):
@@ -54,9 +55,9 @@ def _dhash64(img: Image.Image) -> int:
     """Compute a 64-bit difference hash."""
     # 9x8 grayscale; compare adjacent columns.
     g = img.convert("L").resize((9, 8), Image.Resampling.LANCZOS)
-    # Pillow typing: `getdata()` returns ImagingCore which isn't typed as Iterable.
-    # Convert using Pillow's native method.
-    px = g.getdata().tolist()
+    # Pillow typing/runtime: `getdata()` returns ImagingCore. It's iterable at runtime,
+    # but not always typed as Iterable, and some versions don't expose `.tolist()`.
+    px = list(cast(Any, g.getdata()))
     h = 0
     bit = 0
     for y in range(8):
@@ -154,12 +155,16 @@ def select_best_loop(
             seam_norm = d0 / typical_step
             cont_norm = (cont / max(1, kmax)) / typical_step if kmax > 0 else seam_norm
 
-            # Small bias toward longer loops within range.
             gap = end - start
             duration = gap / fps
-            length_bias = 1.0 - min(0.25, (duration - loop_min_seconds) / max(0.001, loop_max_seconds - loop_min_seconds) * 0.25)
 
-            score = (seam_norm * 0.75 + cont_norm * 0.25) * length_bias
+            # Pragmatic default: strongly prefer longer loops (closer to the 10s source),
+            # even if the seam is slightly worse. This avoids 3–5s loops being repeated
+            # for long renders.
+            base = seam_norm * 0.75 + cont_norm * 0.25
+            duration_penalty = max(0.0, loop_max_seconds - duration) / max(0.001, loop_max_seconds)
+            # Multiplicative penalty so seam quality still matters, but longer wins.
+            score = base * (1.0 + 2.5 * duration_penalty)
 
             if score < best_score:
                 best_score = score

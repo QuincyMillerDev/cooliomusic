@@ -979,17 +979,17 @@ def clip(
         help="Frame sampling rate used for loop selection (higher = slower but more precise).",
     ),
     loop_min_seconds: float = typer.Option(
-        4.0,
+        8.0,
         "--loop-min-seconds",
         help="Minimum loop duration to consider (final clip duration is flexible).",
     ),
     loop_max_seconds: float = typer.Option(
-        9.0,
+        10.0,
         "--loop-max-seconds",
         help="Maximum loop duration to consider.",
     ),
     seam_seconds: float = typer.Option(
-        0.2,
+        0.3,
         "--seam-seconds",
         help="Crossfade duration across the loop seam (kept short to avoid ghosting).",
     ),
@@ -1168,6 +1168,59 @@ def clip(
         f"Video: {out_mp4}",
         title="Complete",
     ))
+
+
+@app.command()
+def compose(
+    session_dir: str = typer.Argument(
+        ...,
+        help="Path to session directory (must contain final_mix.mp3, tracklist.txt, session_clip.mp4, session.json)",
+    ),
+):
+    """
+    Compose the final upload bundle for YouTube (video + metadata).
+
+    This command renders:
+    - final_youtube.mp4 (looped session_clip.mp4 over final_mix.mp3 with a short fade-in)
+    - youtube_metadata.json
+    - youtube_metadata.txt
+    """
+    from pathlib import Path
+
+    from coolio.compose import ComposeError, compose_session
+
+    session_path = Path(session_dir)
+    console.print(
+        Panel(
+            f"[bold]Session:[/bold] {session_path}\n"
+            "Outputs:\n"
+            "  - final_youtube.mp4\n"
+            "  - youtube_metadata.json\n"
+            "  - youtube_metadata.txt",
+            title="Compose (Final YouTube Bundle)",
+        )
+    )
+    console.print()
+
+    try:
+        result = compose_session(session_path)
+    except ComposeError as e:
+        console.print(f"[red]Compose failed: {e}[/red]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Compose failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print()
+    console.print(
+        Panel(
+            f"[green]Compose complete![/green]\n\n"
+            f"Video: {result.final_video_path}\n"
+            f"Metadata (JSON): {result.youtube_metadata_json_path}\n"
+            f"Metadata (TXT): {result.youtube_metadata_txt_path}",
+            title="Complete",
+        )
+    )
 
 
 @library_app.command("verify")
