@@ -7,7 +7,7 @@ from rich.table import Table
 from rich.panel import Panel
 
 from coolio.config import get_settings
-from coolio.djcoolio import generate_session_plan
+from coolio.djcoolio import generate_session_plan, infer_genre
 from coolio.library.query import LibraryQuery
 from coolio.library.storage import R2Storage
 from coolio.models import SessionPlan
@@ -260,12 +260,15 @@ def generate(
         return
 
     # Step 1: Query Library (unless --no-library)
+    inferred_genre: str | None = None
     candidates = []
     if not no_library:
+        inferred_genre = infer_genre(concept, model=model)
         console.print("[bold cyan]Step 1:[/bold cyan] Querying library for reusable tracks...")
+        console.print(f"  Inferred genre: {inferred_genre}")
         try:
             query = LibraryQuery()
-            candidates = query.query_tracks(exclude_days=exclude_days)
+            candidates = query.query_tracks(exclude_days=exclude_days, genre=inferred_genre)
             if candidates:
                 console.print(f"  Found {len(candidates)} available tracks for potential reuse.")
             else:
@@ -291,6 +294,7 @@ def generate(
             target_duration_minutes=duration,
             model=model,
             provider=provider,
+            fixed_genre=inferred_genre,
         )
     except Exception as e:
         console.print(f"[red]Error generating session plan: {e}[/red]")
@@ -391,12 +395,15 @@ def plan(
     console.print()
 
     # Query Library
+    inferred_genre: str | None = None
     candidates = []
     if not no_library:
+        inferred_genre = infer_genre(concept, model=model)
         console.print("Querying library for reusable tracks...")
+        console.print(f"  Inferred genre: {inferred_genre}")
         try:
             query = LibraryQuery()
-            candidates = query.query_tracks(exclude_days=exclude_days)
+            candidates = query.query_tracks(exclude_days=exclude_days, genre=inferred_genre)
             if candidates:
                 console.print(f"Found {len(candidates)} available tracks.")
             else:
@@ -417,6 +424,7 @@ def plan(
             target_duration_minutes=duration,
             model=model,
             provider=provider,
+            fixed_genre=inferred_genre,
         )
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -1421,11 +1429,6 @@ def library_purge_r2(
         "--yes",
         help="Actually delete objects (default: dry-run).",
     ),
-    delete_orphans: bool = typer.Option(
-        False,
-        "--delete-orphans",
-        help="Delete library/tracks/*.mp3 with no readable metadata JSON.",
-    ),
     sample: int = typer.Option(
         25,
         "--sample",
@@ -1433,91 +1436,30 @@ def library_purge_r2(
     ),
 ):
     """
-    Delete all R2 objects except ElevenLabs library tracks.
+    Delete ALL objects in the R2 library.
 
-    Keeps:
-      - library/tracks/**/{track_id}.json where provider == "elevenlabs"
-      - the matching library/tracks/**/{track_id}.mp3
+    This deletes everything under:
+      - library/**
 
-    Everything else is deleted (sessions/*, non-elevenlabs library tracks, etc).
+    Note: This does NOT delete sessions/* anymore. It is intentionally scoped
+    to the library only.
     """
     s = get_settings()
-    console.print(Panel("[bold]R2 Purge (keep ElevenLabs library songs)[/bold]", title="Coolio"))
+    console.print(Panel("[bold]R2 Purge (delete ALL library objects)[/bold]", title="Coolio"))
     console.print(f"[bold]Endpoint:[/bold] {s.r2_endpoint_url}")
     console.print(f"[bold]Bucket:[/bold] {s.r2_bucket_name}")
     console.print(f"[bold]Mode:[/bold] {'DELETE' if yes else 'DRY-RUN'}")
-    console.print(f"[bold]Delete orphans:[/bold] {delete_orphans}")
+    console.print(f"[bold]Prefix:[/bold] library/")
     console.print()
 
     r2 = R2Storage()
 
     # ---------------------------------------------------------------------
-    # Phase 1: Determine which library tracks to keep (provider == elevenlabs)
-    # ---------------------------------------------------------------------
-    library_prefix = "library/tracks/"
-    mp3_keys: set[str] = set()
-    json_keys: set[str] = set()
-
-    keep_keys: set[str] = set()
-    elevenlabs_tracks = 0
-    non_elevenlabs_tracks = 0
-    unreadable_metadata = 0
-
-    # Collect all library keys first so we can detect missing metadata.
-    for obj in r2.iter_objects(prefix=library_prefix):
-        key = str(obj.get("Key", ""))
-        if not key:
-            continue
-        if key.endswith(".mp3"):
-            mp3_keys.add(key)
-        elif key.endswith(".json"):
-            json_keys.add(key)
-
-    # Read metadata JSON to decide what to keep.
-    for meta_key in sorted(json_keys):
-        try:
-            data = r2.read_json(meta_key)
-        except Exception:
-            unreadable_metadata += 1
-            # Unknown provider -> keep by default unless caller explicitly deletes orphans.
-            if not delete_orphans:
-                keep_keys.add(meta_key)
-                audio_key = meta_key[:-5] + ".mp3"
-                if audio_key in mp3_keys:
-                    keep_keys.add(audio_key)
-            continue
-
-        provider = str(data.get("provider", "")).lower()
-        audio_key = meta_key[:-5] + ".mp3"
-
-        if provider == "elevenlabs":
-            elevenlabs_tracks += 1
-            keep_keys.add(meta_key)
-            if audio_key in mp3_keys:
-                keep_keys.add(audio_key)
-        else:
-            non_elevenlabs_tracks += 1
-
-    # Orphan MP3s with no metadata JSON at all.
-    orphan_mp3_keys: list[str] = []
-    for audio_key in sorted(mp3_keys):
-        meta_key = audio_key[:-4] + ".json"
-        if meta_key not in json_keys:
-            orphan_mp3_keys.append(audio_key)
-
-    if orphan_mp3_keys and not delete_orphans:
-        for k in orphan_mp3_keys:
-            keep_keys.add(k)
-
-    # ---------------------------------------------------------------------
-    # Phase 2: Scan whole bucket and delete everything not in keep-set
+    # Delete everything under library/**
     # ---------------------------------------------------------------------
     total_objects = 0
-    kept_objects = 0
     delete_count = 0
-    sample_keep: list[str] = []
     sample_delete: list[str] = []
-
     delete_batch: list[str] = []
     deleted_total = 0
     error_total = 0
@@ -1531,18 +1473,12 @@ def library_purge_r2(
         error_total += len(result.get("Errors", []) or [])
         delete_batch.clear()
 
-    for obj in r2.iter_objects(prefix=""):
+    for obj in r2.iter_objects(prefix="library/"):
         key = str(obj.get("Key", ""))
         if not key:
             continue
 
         total_objects += 1
-        if key in keep_keys:
-            kept_objects += 1
-            if len(sample_keep) < sample:
-                sample_keep.append(key)
-            continue
-
         delete_count += 1
         if len(sample_delete) < sample:
             sample_delete.append(key)
@@ -1561,21 +1497,8 @@ def library_purge_r2(
     # ---------------------------------------------------------------------
     console.print(Panel("[bold]Summary[/bold]", title="R2 Purge"))
     console.print(f"[bold]Total objects scanned:[/bold] {total_objects}")
-    console.print(f"[bold]Kept objects:[/bold] {kept_objects}")
     console.print(f"[bold]Deleted objects:[/bold] {delete_count}")
     console.print()
-    console.print(Panel("[bold]Library classification[/bold]", title="Keep Logic"))
-    console.print(f"[bold]ElevenLabs tracks (by metadata JSON):[/bold] {elevenlabs_tracks}")
-    console.print(f"[bold]Non-ElevenLabs tracks (by metadata JSON):[/bold] {non_elevenlabs_tracks}")
-    console.print(f"[bold]Unreadable metadata JSON:[/bold] {unreadable_metadata}")
-    console.print(f"[bold]Orphan MP3 (no metadata JSON):[/bold] {len(orphan_mp3_keys)}")
-    console.print()
-
-    if sample_keep:
-        console.print(Panel("[bold]Example kept keys[/bold]", title=f"Keep (first {min(sample, len(sample_keep))})"))
-        for k in sample_keep:
-            console.print(f"  [green]KEEP[/green] {k}")
-        console.print()
 
     if sample_delete:
         console.print(Panel("[bold]Example deleted keys[/bold]", title=f"Delete (first {min(sample, len(sample_delete))})"))

@@ -7,6 +7,7 @@ a SessionPlan.
 
 import json
 import logging
+import re
 
 from openai import OpenAI
 
@@ -23,12 +24,18 @@ You are a music curator building playlists for a productivity music channel. You
 
 PRIORITIES (in order):
 1. Hit duration target (±5 min)
-2. Maximize library reuse (FREE tracks save money)
+2. Maintain playlist coherence and genre fit (do NOT stretch reuse)
 3. Create natural variety - vary mood and intensity across tracks
+4. Minimize cost (library reuse is free, but optional)
 </curator_identity>
 
 <library_reuse>
-Use 30-50% of available library tracks as anchors. Only reject if it's a true vibe killer. Generate new tracks to bridge gaps between anchors. Document decisions in "reasoning.library_analysis".
+Library reuse is OPTIONAL and must never compromise fit.
+
+Rules:
+- Only reuse a library track if it clearly fits the session vibe and sequence.
+- It is OK to reuse 0 tracks (prefer generating new tracks over forcing reuse).
+- Document decisions in "reasoning.library_analysis" for any library candidates you considered.
 </library_reuse>
 
 <naming_firewall>
@@ -194,12 +201,86 @@ def _create_client() -> OpenAI:
     )
 
 
+_GENRE_INFERENCE_SYSTEM_PROMPT = """You infer a single canonical genre slug for a music session.
+
+Return ONLY valid JSON of the form:
+{"genre": "<slug>"}
+
+Rules for <slug>:
+- lowercase
+- 1-40 chars
+- only letters, numbers, underscores, hyphens
+- no spaces, no prose, no extra keys
+"""
+
+
+def _sanitize_genre_slug(value: str) -> str:
+    v = (value or "").strip().lower()
+    v = re.sub(r"\\s+", "_", v)
+    v = re.sub(r"[^a-z0-9_-]", "", v)
+    v = v.strip("_-")
+    if not v:
+        return "unknown"
+    return v[:40]
+
+
+def infer_genre(concept: str, *, model: str | None = None) -> str:
+    """Infer a canonical genre slug from a free-form concept.
+
+    This is used *before* querying the library so we can strictly filter reuse
+    candidates by exact genre.
+    """
+    client = _create_client()
+    s = get_settings()
+    model = model or s.openrouter_model
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _GENRE_INFERENCE_SYSTEM_PROMPT},
+                {"role": "user", "content": f'CONCEPT: "{concept}"'},
+            ],
+            temperature=0.0,
+            response_format={"type": "json_object"},
+        )
+    except Exception as e:
+        logger.warning("Genre inference failed: %s", e)
+        return "unknown"
+
+    content = response.choices[0].message.content
+    if not content:
+        return "unknown"
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        # Occasionally models still emit markdown; try a minimal cleanup.
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            first_newline = cleaned.find("\\n")
+            if first_newline != -1:
+                cleaned = cleaned[first_newline + 1 :]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3].strip()
+        try:
+            data = json.loads(cleaned)
+        except Exception:
+            return "unknown"
+
+    genre = data.get("genre")
+    if not isinstance(genre, str):
+        return "unknown"
+    return _sanitize_genre_slug(genre)
+
+
 def generate_session_plan(
     concept: str,
     candidates: list[TrackMetadata],
     target_duration_minutes: int = 60,
     model: str | None = None,
     provider: str = "elevenlabs",
+    fixed_genre: str | None = None,
 ) -> SessionPlan:
     """Generate a session plan mixing library tracks and new generation.
 
@@ -207,7 +288,8 @@ def generate_session_plan(
     user's concept, reviews available library tracks, and creates a plan
     that optimally mixes reuse with new generation.
 
-    The LLM infers the appropriate genre from the concept.
+    The LLM can infer the appropriate genre from the concept, but callers may
+    also pin a fixed genre for strict library reuse.
 
     Args:
         concept: User's video concept/vibe (genre, mood, purpose).
@@ -215,6 +297,7 @@ def generate_session_plan(
         target_duration_minutes: Target total duration (primary constraint).
         model: LLM model to use.
         provider: Audio provider to use for all new tracks.
+        fixed_genre: If provided, force the session genre to this value.
 
     Returns:
         SessionPlan containing the complete tracklist with sources.
@@ -251,22 +334,20 @@ def generate_session_plan(
     else:
         candidates_json = "[]  # Library is empty - generate all tracks"
 
-    # Calculate library duration if candidates exist
-    library_duration_min = sum(t.duration_ms for t in candidates) / 60000 if candidates else 0
-    min_library_reuse = max(1, len(candidates) // 3) if candidates else 0  # At least 30%
+    genre_line = f'SESSION GENRE (fixed): "{fixed_genre}"\\n' if fixed_genre else ""
 
     user_prompt = f"""CONCEPT: "{concept}"
-TARGET DURATION: {target_duration_minutes} minutes
+{genre_line}TARGET DURATION: {target_duration_minutes} minutes
 PROVIDER: {provider} (use ONLY this provider for all new tracks)
 
-=== STEP 1: LIBRARY ANCHORS (MANDATORY) ===
-You have {len(candidates)} library tracks available ({library_duration_min:.1f} min total).
-These are FREE. New generation costs {cost_info}.
+=== STEP 1: OPTIONAL LIBRARY REUSE (STRICT) ===
+You have {len(candidates)} library tracks available. These are FREE. New generation costs {cost_info}.
 
-REQUIREMENT: Use at least {min_library_reuse} of these tracks as anchors.
-For each candidate, you MUST document in "reasoning.library_analysis":
+Reuse is OPTIONAL. Prefer generating new tracks over forcing reuse.
+If you reuse a library track, it must clearly fit the session vibe and sequence.
+For each candidate you consider, document in "reasoning.library_analysis":
 - KEEP: Where you'll place it and why it fits
-- REJECT: Only if it's a genuine "vibe killer" (prove it)
+- REJECT: Why it doesn't fit
 
 LIBRARY CANDIDATES:
 {candidates_json}
@@ -322,7 +403,8 @@ Remember: Titles must NOT reference the concept. No "Neon", "Cyber", "Arcade", e
 
     try:
         data = json.loads(content)
-        genre = data.get("genre", "electronic")
+        model_genre = data.get("genre", "unknown")
+        genre = _sanitize_genre_slug(fixed_genre) if fixed_genre else _sanitize_genre_slug(str(model_genre))
         slots_data = data.get("slots", [])
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON from planner: {e}")

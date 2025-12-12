@@ -19,17 +19,29 @@ class LibraryQuery:
     def __init__(self, storage: Optional[R2Storage] = None):
         self.storage = storage or R2Storage()
 
-    def query_tracks(self, exclude_days: int = 7) -> List[TrackMetadata]:
+    def query_tracks(
+        self,
+        *,
+        exclude_days: int = 7,
+        genre: str | None = None,
+    ) -> List[TrackMetadata]:
         """Query all tracks from the library.
 
         Args:
             exclude_days: Number of days to exclude recently used tracks.
+            genre: If provided, only return tracks whose metadata genre exactly
+                matches this value.
 
         Returns:
             List of candidate TrackMetadata objects.
         """
-        prefix = "library/tracks/"
-        logger.info(f"Querying library for all tracks (prefix: {prefix})...")
+        prefix = f"library/tracks/{genre}/" if genre else "library/tracks/"
+        logger.info(
+            "Querying library for reusable tracks (prefix: %s, exclude_days=%s, genre=%s)...",
+            prefix,
+            exclude_days,
+            genre,
+        )
 
         try:
             # List all JSON files in the tracks directory (paginated).
@@ -56,6 +68,11 @@ class LibraryQuery:
                 # cheap ($0.20 flat) so we prefer to generate fresh ones.
                 # The LLM planner only sees ElevenLabs candidates.
                 if track.provider != "elevenlabs":
+                    continue
+
+                # GENRE FILTER: Only return exact-genre matches when requested.
+                # This is intentionally strict (no fuzzy matching / aliases).
+                if genre is not None and track.genre != genre:
                     continue
 
                 # Recency Check - skip recently used tracks
