@@ -41,6 +41,23 @@ class Settings(BaseSettings):
         alias="COOLIO_REFERENCE_DJ_IMAGE_PATH",
     )
 
+    # Kling AI (image-to-video)
+    # Optional so other commands can run without Kling configured.
+    kling_ai_access_key: str | None = Field(default=None, alias="KLING_AI_ACCESS_KEY")
+    kling_ai_secret_key: str | None = Field(default=None, alias="KLING_AI_SECRET_KEY")
+    kling_base_url: str = Field(
+        default="https://api-singapore.klingai.com",
+        alias="KLING_BASE_URL",
+    )
+    kling_model_name: str = Field(
+        default="kling-v2-5-turbo",
+        alias="KLING_MODEL_NAME",
+    )
+    kling_mode: str = Field(
+        default="std",
+        alias="KLING_MODE",
+    )
+
     # Cloudflare R2 Storage
     r2_access_key_id: str = Field(..., alias="R2_ACCESS_KEY_ID")
     r2_secret_access_key: str = Field(..., alias="R2_SECRET_ACCESS_KEY")

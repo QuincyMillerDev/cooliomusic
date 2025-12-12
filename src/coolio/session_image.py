@@ -23,12 +23,12 @@ from coolio.config import get_settings
 
 BACKGROUND_BRIEF_SCHEMA = """Return valid JSON with this schema:
 {
-  "setting": "1-2 sentences describing only the environment behind/around the DJ",
+  "setting": "1-2 sentences describing only the environment behind/around the DJ; keep it subtle and plausible (background replacement, not a new fantasy scene)",
   "time_of_day": "e.g. night, golden hour, overcast morning",
-  "lighting": "short phrase; match photorealistic lighting; do not change subject lighting direction drastically",
+  "lighting": "short phrase; match the reference exposure/contrast/white balance; do not add cinematic effects; do not change lighting direction drastically",
   "color_palette": ["3-6 color words"],
-  "props_background_only": ["3-8 items that appear in the BACKGROUND only"],
-  "camera_style": "1 sentence; must remain consistent with reference image (same focal length/framing/perspective)",
+  "props_background_only": ["2-5 items that appear in the BACKGROUND only that complement the music vibe; keep them realistic and understated"],
+  "camera_style": "1 sentence; must remain consistent with reference image (same focal length/framing/perspective); documentary/photo-real",
   "do_not_change_foreground": [
     "foreground DJ subject identity/pose",
     "goggles",
@@ -106,6 +106,8 @@ def build_visual_seed(session_meta: dict[str, Any], *, max_tracks: int = 8) -> d
     genre = str(session_meta.get("genre", "")).strip()
     slots = session_meta.get("slots") or []
 
+    # Keep seed compact to avoid "literal scene generation" from detailed prompts.
+    # We want the vibe, not a storyboarding of environments.
     examples: list[dict[str, str]] = []
     for slot in slots:
         if not isinstance(slot, dict):
@@ -116,12 +118,7 @@ def build_visual_seed(session_meta: dict[str, Any], *, max_tracks: int = 8) -> d
         prompt = str(slot.get("prompt", "")).strip()
         if not (title or prompt):
             continue
-        examples.append(
-            {
-                "title": title[:120],
-                "prompt": prompt[:600],
-            }
-        )
+        examples.append({"title": title[:120]})
         if len(examples) >= max_tracks:
             break
 
@@ -145,7 +142,10 @@ def generate_background_brief(
         "The foreground DJ subject and gear are locked to a reference image and must NOT change.\n"
         "Do not describe changes to the DJ, clothing, goggles, hands, turntables, mixer, framing, or camera angle.\n"
         "Focus exclusively on the set/room/environment behind and around the subject.\n"
-        "Keep it photorealistic and coherent.\n\n"
+        "Treat this as BACKGROUND REPLACEMENT inside the same photo, not a new scene.\n"
+        "Photorealistic, understated, documentary look. Match the reference realism.\n"
+        "Hard bans (do not include in your brief): neon, bloom, haze/fog/volumetric light, cinematic grading, ultra glossy reflections, CGI look.\n"
+        "Keep changes subtle: think wall treatment + a few props + practical lighting, nothing dramatic.\n\n"
         f"{BACKGROUND_BRIEF_SCHEMA}"
     )
 
@@ -155,7 +155,8 @@ def generate_background_brief(
         "- Foreground is locked; ONLY background changes.\n"
         "- Avoid text/signage/logos in the background.\n"
         "- Do not mention brand names.\n"
-        "- Keep the vibe aligned with the music.\n\n"
+        "- Keep the vibe aligned with the music, but keep the background plausible and subtle.\n"
+        "- Prefer \"home-studio / small room / understated set\" realism unless the seed strongly demands otherwise.\n\n"
         f"SESSION_SEED:\n{json.dumps(seed, indent=2)}\n"
     )
 
@@ -199,7 +200,9 @@ def build_image_prompt(brief: BackgroundBrief) -> str:
         "Edit/variant of the provided reference image.\n"
         "Keep the DJ foreground and all gear exactly the same.\n"
         "Add modern over-ear DJ headphones to the subject (natural fit, no distortion).\n"
-        "ONLY change the background environment behind and around the DJ.\n\n"
+        "ONLY replace the background environment behind and around the DJ (subtle, realistic).\n"
+        "Match the reference photo's realism: exposure, contrast, white balance, sharpness, and natural texture.\n"
+        "No cinematic grading, no bloom, no haze/fog, no neon, no glossy/CGI look.\n\n"
         f"BACKGROUND SETTING:\n{brief.setting}\n\n"
         f"TIME OF DAY: {brief.time_of_day}\n"
         f"LIGHTING: {brief.lighting}\n"
@@ -211,6 +214,8 @@ def build_image_prompt(brief: BackgroundBrief) -> str:
         "NEGATIVE:\n"
         "- no text, no captions, no watermarks, no logos\n"
         "- no extra people, no extra limbs, no distorted hands\n"
+        "- no bloom, no neon, no haze/fog/volumetric light, no cinematic grading\n"
+        "- no ultra glossy reflections, no CGI, no plastic skin, no hyperreal look\n"
         "- no changes to the DJ face, goggles, clothing, pose, or equipment layout (except adding headphones)\n"
     )
 

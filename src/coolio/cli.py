@@ -458,6 +458,17 @@ def config():
     table.add_row("OpenRouter API Key", mask_key(s.openrouter_api_key))
     table.add_row("OpenRouter Model", s.openrouter_model)
     table.add_row("Stable Audio Model", s.stable_audio_model)
+    table.add_row(
+        "Kling AI Access Key",
+        mask_key(s.kling_ai_access_key) if s.kling_ai_access_key else "(not set)",
+    )
+    table.add_row(
+        "Kling AI Secret Key",
+        mask_key(s.kling_ai_secret_key) if s.kling_ai_secret_key else "(not set)",
+    )
+    table.add_row("Kling Base URL", s.kling_base_url)
+    table.add_row("Kling Model", s.kling_model_name)
+    table.add_row("Kling Mode", s.kling_mode)
     table.add_row("Output Directory", str(s.output_dir))
     table.add_row("", "")
     table.add_row("R2 Access Key", mask_key(s.r2_access_key_id))
@@ -838,9 +849,10 @@ def image(
         console.print(f"  JSON: {out_json}")
 
     # Defaults
+    ref_override = s.coolio_reference_dj_image_path
     default_ref = (
-        Path(s.coolio_reference_dj_image_path)
-        if getattr(s, "coolio_reference_dj_image_path", None)
+        ref_override
+        if ref_override is not None
         else (Path(__file__).resolve().parent / "assets" / "images" / "djreferenceimage.png")
     )
     ref_path = Path(ref_image) if ref_image else default_ref
@@ -931,6 +943,229 @@ def image(
         f"[green]Session image complete![/green]\n\n"
         f"Image: {out_png}\n"
         f"Metadata: {out_json}",
+        title="Complete",
+    ))
+
+
+@app.command()
+def clip(
+    session_dir: str = typer.Argument(
+        ...,
+        help="Path to session directory (must contain session_image.png)",
+    ),
+    prompt: str = typer.Option(
+        None,
+        "--prompt",
+        help="Prompt for Kling image-to-video (default: chill DJ prompt).",
+    ),
+    negative_prompt: str = typer.Option(
+        None,
+        "--negative-prompt",
+        help="Negative prompt for Kling image-to-video (default: conservative anti-warping prompt).",
+    ),
+    model_name: str = typer.Option(
+        None,
+        "--model-name",
+        help="Kling model_name (default: KLING_MODEL_NAME or kling-v2-5-turbo).",
+    ),
+    mode: str = typer.Option(
+        None,
+        "--mode",
+        help="Kling mode: std or pro (default: KLING_MODE or std).",
+    ),
+    fps: int = typer.Option(
+        15,
+        "--fps",
+        help="Frame sampling rate used for loop selection (higher = slower but more precise).",
+    ),
+    loop_min_seconds: float = typer.Option(
+        4.0,
+        "--loop-min-seconds",
+        help="Minimum loop duration to consider (final clip duration is flexible).",
+    ),
+    loop_max_seconds: float = typer.Option(
+        9.0,
+        "--loop-max-seconds",
+        help="Maximum loop duration to consider.",
+    ),
+    seam_seconds: float = typer.Option(
+        0.2,
+        "--seam-seconds",
+        help="Crossfade duration across the loop seam (kept short to avoid ghosting).",
+    ),
+):
+    """
+    Generate a 10s Kling clip from session_image.png, then post-process into a perfect loop.
+
+    Kling must generate 10 seconds, but the final looped clip duration is flexible.
+    """
+    import base64
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from coolio.providers.kling import (
+        KlingError,
+        create_image2video_task,
+        download_video_bytes,
+        extract_video_url,
+        poll_task_until_complete,
+    )
+    from coolio.session_image import now_iso
+    from coolio.video_loop import VideoLoopError, render_forward_only_loop, select_best_loop
+
+    s = get_settings()
+    if not s.kling_ai_access_key or not s.kling_ai_secret_key:
+        console.print(
+            "[red]Missing Kling keys (required for `coolio clip`).[/red]\n"
+            "[dim]Set both KLING_AI_ACCESS_KEY and KLING_AI_SECRET_KEY.[/dim]"
+        )
+        raise typer.Exit(1)
+
+    session_path = Path(session_dir)
+    if not session_path.exists():
+        console.print(f"[red]Session directory not found: {session_path}[/red]")
+        raise typer.Exit(1)
+
+    image_path = session_path / "session_image.png"
+    if not image_path.exists():
+        console.print(f"[red]Missing session_image.png in: {session_path}[/red]")
+        console.print("Tip: run `coolio image <session_dir>` first.")
+        raise typer.Exit(1)
+
+    out_mp4 = session_path / "session_clip.mp4"
+    if out_mp4.exists():
+        console.print("[yellow]Overwriting existing session clip output...[/yellow]")
+        console.print(f"  MP4: {out_mp4}")
+
+    chosen_model = model_name or getattr(s, "kling_model_name", None) or "kling-v2-5-turbo"
+    chosen_mode = mode or getattr(s, "kling_mode", None) or "std"
+
+    default_prompt = (
+        "This monkey is a very chill DJ. Movement just like a human. "
+        "Slow, in the zone, focused on the set. Subtle head nods, small hand movements. "
+        "No big camera moves."
+    )
+    default_negative = (
+        "no camera shake, no fast motion, no scene change, no face distortion, "
+        "no extra limbs, no text, no logos, no flicker, no heavy zoom"
+    )
+
+    final_prompt = prompt or default_prompt
+    final_negative = negative_prompt or default_negative
+
+    console.print(Panel(
+        f"[bold]Session:[/bold] {session_path.name}\n"
+        f"[bold]Model:[/bold] {chosen_model}\n"
+        f"[bold]Mode:[/bold] {chosen_mode}\n"
+        f"[bold]Duration:[/bold] 10s (Kling constraint)\n"
+        f"[bold]Loop target:[/bold] {loop_min_seconds:.1f}s–{loop_max_seconds:.1f}s (forward-only)\n"
+        f"[bold]Output:[/bold] {out_mp4}",
+        title="Session Clip (Kling → Loop)",
+    ))
+    console.print()
+
+    task_id: str | None = None
+    video_url: str | None = None
+
+    try:
+        console.print("[bold cyan]Step 1:[/bold cyan] Creating Kling image-to-video task...")
+        image_b64 = base64.b64encode(image_path.read_bytes()).decode("utf-8")
+        task_id = create_image2video_task(
+            access_key=s.kling_ai_access_key,
+            secret_key=s.kling_ai_secret_key,
+            base_url=s.kling_base_url,
+            image_b64=image_b64,
+            prompt=final_prompt,
+            negative_prompt=final_negative,
+            model_name=chosen_model,
+            mode=chosen_mode,
+            duration="10",
+        )
+        console.print(f"  Task: {task_id}")
+
+        console.print()
+        console.print("[bold cyan]Step 2:[/bold cyan] Waiting for Kling to finish...")
+        task_result = poll_task_until_complete(
+            access_key=s.kling_ai_access_key,
+            secret_key=s.kling_ai_secret_key,
+            base_url=s.kling_base_url,
+            task_id=task_id,
+        )
+        video_url = extract_video_url(task_result)
+
+        console.print()
+        console.print("[bold cyan]Step 3:[/bold cyan] Downloading 10s clip...")
+        raw_bytes = download_video_bytes(url=video_url)
+
+        with tempfile.TemporaryDirectory(prefix="coolio_kling_") as d:
+            tmp = Path(d)
+            raw_path = tmp / "kling_raw.mp4"
+            raw_path.write_bytes(raw_bytes)
+
+            console.print()
+            console.print("[bold cyan]Step 4:[/bold cyan] Selecting best forward-only loop...")
+            selection = select_best_loop(
+                raw_path,
+                fps=fps,
+                loop_min_seconds=loop_min_seconds,
+                loop_max_seconds=loop_max_seconds,
+            )
+            console.print(
+                f"  Selected: {selection.start_seconds:.2f}s → {selection.end_seconds:.2f}s "
+                f"({selection.duration_seconds:.2f}s), score={selection.score:.3f}"
+            )
+
+            console.print()
+            console.print("[bold cyan]Step 5:[/bold cyan] Rendering seamless loop...")
+            render_forward_only_loop(
+                input_video_path=raw_path,
+                output_video_path=out_mp4,
+                selection=selection,
+                seam_seconds=seam_seconds,
+            )
+
+    except (KlingError, VideoLoopError, Exception) as e:
+        error_path = session_path / "session_clip_error.json"
+        try:
+            payload = {
+                "session_id": session_path.name,
+                "created_at": now_iso(),
+                "session_image": str(image_path),
+                "output_video": str(out_mp4),
+                "kling": {
+                    "base_url": s.kling_base_url,
+                    "model_name": chosen_model,
+                    "mode": chosen_mode,
+                    "duration": "10",
+                    "task_id": task_id,
+                    "video_url": video_url,
+                },
+                "prompt": final_prompt,
+                "negative_prompt": final_negative,
+                "loop": {
+                    "fps": fps,
+                    "loop_min_seconds": loop_min_seconds,
+                    "loop_max_seconds": loop_max_seconds,
+                    "seam_seconds": seam_seconds,
+                },
+                "error": str(e),
+                "error_type": type(e).__name__,
+            }
+            if isinstance(e, KlingError):
+                payload["kling"]["raw_error"] = e.raw
+            error_path.write_text(json.dumps(payload, indent=2))
+            console.print(f"[yellow]Wrote debug file: {error_path}[/yellow]")
+        except Exception:
+            pass
+
+        console.print(f"[red]Failed to generate session clip: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print()
+    console.print(Panel(
+        f"[green]Session clip complete![/green]\n\n"
+        f"Video: {out_mp4}",
         title="Complete",
     ))
 

@@ -162,7 +162,7 @@ def generate_image_from_reference(
     reference_image_path: Path,
     prompt: str,
     image_model: str,
-    temperature: float = 0.6,
+    temperature: float = 0.35,
 ) -> GeneratedImage:
     """Generate an image using a reference image to anchor composition."""
     if not reference_image_path.exists():
@@ -180,6 +180,8 @@ def generate_image_from_reference(
         "- Preserve camera framing, perspective, and overall composition.\n"
         "- ONLY change the background/setting behind and around the DJ.\n"
         "- Do not add text, watermarks, logos, UI, or captions.\n"
+        "- Match the reference photo realism: exposure/contrast/white balance, natural textures.\n"
+        "- Avoid cinematic effects: no bloom, no neon, no haze/fog/volumetric light, no glossy CGI look.\n"
         "- Keep photorealistic lighting and coherent shadows.\n"
     )
 
