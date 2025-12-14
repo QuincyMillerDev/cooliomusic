@@ -17,6 +17,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from typing import cast
 
 from pydub import AudioSegment
 from pydub.silence import detect_leading_silence
@@ -71,6 +72,10 @@ class MixComposer:
     DEFAULT_TRIM_LEADING_SILENCE_FIRST_TRACK = True
     DEFAULT_LEADING_SILENCE_THRESHOLD_DBFS = -33.0
     DEFAULT_LEADING_SILENCE_MAX_TRIM_MS = 30_000
+    # Reduce dead air between tracks by trimming *clear* near-silence at boundaries.
+    # Keep this conservative to avoid destroying reverb tails and musical endings.
+    DEFAULT_GAP_TRIM_THRESHOLD_DBFS = -35.0
+    DEFAULT_GAP_TRIM_MAX_TRIM_MS = 8000
 
     def __init__(
         self,
@@ -146,7 +151,47 @@ class MixComposer:
         trimmed_ms = max(0, min(trimmed_ms, max_trim_ms))
         if trimmed_ms <= 0:
             return audio, 0
-        return audio[trimmed_ms:], trimmed_ms
+        # pydub's typing stubs treat slicing as possibly yielding generators (when step is used),
+        # but for our slice-without-step usage it is always an AudioSegment at runtime.
+        return cast(AudioSegment, audio[trimmed_ms:]), trimmed_ms
+
+    def _trim_trailing_silence(
+        self,
+        audio: AudioSegment,
+        *,
+        silence_threshold_dbfs: float,
+        max_trim_ms: int,
+        chunk_size_ms: int = 10,
+    ) -> tuple[AudioSegment, int]:
+        """Trim trailing near-silence from an audio segment.
+
+        Returns:
+            (trimmed_audio, trimmed_ms)
+        """
+        if len(audio) <= 0:
+            return audio, 0
+
+        max_trim_ms = max(0, min(int(max_trim_ms), len(audio)))
+        if max_trim_ms == 0:
+            return audio, 0
+
+        # Only analyze the tail window so we don't mis-trim quiet parts earlier in the track.
+        tail = cast(AudioSegment, audio[-max_trim_ms:])
+        # Reverse so we can reuse detect_leading_silence.
+        reversed_tail = cast(AudioSegment, tail.reverse())
+        trimmed_ms = int(
+            detect_leading_silence(
+                reversed_tail,
+                silence_threshold=silence_threshold_dbfs,
+                chunk_size=chunk_size_ms,
+            )
+        )
+
+        trimmed_ms = max(0, min(trimmed_ms, max_trim_ms))
+        if trimmed_ms <= 0:
+            return audio, 0
+        # See note above: pydub slice returns AudioSegment for step=None.
+        return cast(AudioSegment, audio[:-trimmed_ms]), trimmed_ms
 
     def load_session_tracks(self, session_dir: Path) -> list[TrackInfo]:
         """Load track information from a session directory.
@@ -331,11 +376,55 @@ class MixComposer:
             print(f"  Loading: {track.title}")
             next_audio = AudioSegment.from_mp3(track.audio_path)
 
-            # Calculate start time (accounting for crossfade overlap)
-            track.start_time_ms = current_position_ms - self.crossfade_ms
+            # Reduce dead air by trimming *clear* near-silence at the boundary.
+            #
+            # We intentionally do this only at boundaries (tail of current, head of next)
+            # so we don't accidentally remove quiet musical sections mid-track.
+            boundary_threshold = self.DEFAULT_GAP_TRIM_THRESHOLD_DBFS
+            max_side_trim_ms = self.DEFAULT_GAP_TRIM_MAX_TRIM_MS
+
+            # Keep trimming non-aggressive: never trim more than 10% of the segment.
+            mixed_side_cap = min(max_side_trim_ms, len(mixed) // 10)
+            next_side_cap = min(max_side_trim_ms, len(next_audio) // 10)
+
+            if mixed_side_cap > 0:
+                mixed, trimmed_tail_ms = self._trim_trailing_silence(
+                    mixed,
+                    silence_threshold_dbfs=boundary_threshold,
+                    max_trim_ms=mixed_side_cap,
+                )
+                if trimmed_tail_ms > 0:
+                    print(
+                        f"  Trimmed trailing silence before track {track.order}: "
+                        f"{trimmed_tail_ms}ms (threshold {boundary_threshold} dBFS)"
+                    )
+
+            if next_side_cap > 0:
+                next_audio, trimmed_head_ms = self._trim_leading_silence(
+                    next_audio,
+                    silence_threshold_dbfs=boundary_threshold,
+                    max_trim_ms=next_side_cap,
+                )
+                if trimmed_head_ms > 0:
+                    print(
+                        f"  Trimmed leading silence on track {track.order}: "
+                        f"{trimmed_head_ms}ms (threshold {boundary_threshold} dBFS)"
+                    )
+
+            # Clamp crossfade so it matches the actual available overlap after trimming.
+            effective_crossfade_ms = min(self.crossfade_ms, len(mixed), len(next_audio))
+            if effective_crossfade_ms < self.crossfade_ms:
+                print(
+                    f"  Crossfade clamped: {self.crossfade_ms}ms -> {effective_crossfade_ms}ms "
+                    f"(after trimming, segment lengths: {len(mixed)}ms/{len(next_audio)}ms)"
+                )
+
+            # Calculate start time (accounting for the actual crossfade overlap used)
+            current_position_ms = len(mixed)
+            track.start_time_ms = current_position_ms - effective_crossfade_ms
 
             # Apply crossfade
-            mixed = mixed.append(next_audio, crossfade=self.crossfade_ms)
+            mixed = mixed.append(next_audio, crossfade=effective_crossfade_ms)
 
             # Update position (subtract crossfade since it overlaps)
             current_position_ms = len(mixed)

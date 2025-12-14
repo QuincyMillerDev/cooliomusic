@@ -800,12 +800,6 @@ def image(
         ...,
         help="Path to session directory (should contain session.json; typically after `coolio mix`)",
     ),
-    model: str = typer.Option(
-        None,
-        "--model",
-        "-m",
-        help="OpenRouter text model to generate the background brief (default: OPENROUTER_MODEL)",
-    ),
     image_model: str = typer.Option(
         None,
         "--image-model",
@@ -821,17 +815,14 @@ def image(
     Generate a session image anchored to the reference DJ photo.
 
     This is a standalone command (not orchestrated yet). It reads session metadata,
-    generates a background-only visual brief, then uses an image model with the
-    reference image as input so the DJ/gear remain consistent while only the
-    setting behind the DJ changes.
+    then uses an image model with the reference image as input so the DJ/gear remain
+    consistent while only the setting behind the DJ changes.
     """
     from pathlib import Path
     import json
 
     from coolio.session_image import (
-        build_image_prompt,
-        build_visual_seed,
-        generate_background_brief,
+        build_image_prompt_from_concept,
         load_session_json,
         now_iso,
     )
@@ -867,42 +858,27 @@ def image(
     )
     ref_path = Path(ref_image) if ref_image else default_ref
     chosen_image_model = image_model or getattr(s, "openrouter_image_model", None) or "google/gemini-3-pro-image-preview"
-    chosen_brief_model = model or s.openrouter_model
 
     if not ref_path.exists():
         console.print(f"[red]Reference image not found: {ref_path}[/red]")
         raise typer.Exit(1)
 
-    # Load metadata and generate background brief
+    # Load metadata and generate prompt (single-step; no brief)
     session_meta = load_session_json(session_path)
-    seed = build_visual_seed(session_meta)
+    concept = str(session_meta.get("concept", "")).strip()
+    genre = str(session_meta.get("genre", "")).strip()
+    prompt = build_image_prompt_from_concept(concept, genre)
 
     console.print(Panel(
         f"[bold]Session:[/bold] {session_path.name}\n"
-        f"[bold]Brief model:[/bold] {chosen_brief_model}\n"
         f"[bold]Image model:[/bold] {chosen_image_model}\n"
         f"[bold]Reference:[/bold] {ref_path}",
         title="Session Image",
     ))
     console.print()
-    console.print("[bold cyan]Step 1:[/bold cyan] Generating background brief...")
-
-    try:
-        brief = generate_background_brief(seed=seed, model=chosen_brief_model)
-    except Exception as e:
-        console.print(f"[red]Failed to generate background brief: {e}[/red]")
-        raise typer.Exit(1)
-
-    console.print()
-    console.print(Panel(
-        json.dumps(brief.to_dict(), indent=2),
-        title="Background brief (background only)",
-    ))
-    console.print()
 
     # Generate the image
-    console.print("[bold cyan]Step 2:[/bold cyan] Generating anchored session image...")
-    prompt = build_image_prompt(brief)
+    console.print("[bold cyan]Generating anchored session image...[/bold cyan]")
 
     try:
         result = generate_image_from_reference(
@@ -918,9 +894,9 @@ def image(
                 "session_id": session_path.name,
                 "created_at": now_iso(),
                 "reference_image": str(ref_path),
-                "brief_model": chosen_brief_model,
                 "image_model": chosen_image_model,
-                "background_brief": brief.to_dict(),
+                "concept": concept,
+                "genre": genre,
                 "prompt": prompt,
                 "error": str(e),
             }
@@ -938,9 +914,9 @@ def image(
         "session_id": session_path.name,
         "created_at": now_iso(),
         "reference_image": str(ref_path),
-        "brief_model": chosen_brief_model,
         "image_model": result.model_used,
-        "background_brief": brief.to_dict(),
+        "concept": concept,
+        "genre": genre,
         "prompt": result.prompt,
         "mime_type": result.mime_type,
         "output_image": str(out_png),
