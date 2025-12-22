@@ -52,7 +52,7 @@ def build_image_prompt_from_concept(concept: str, genre: str) -> str:
         "Avoid backgrounds that look like a fake production set or a movie set.\n"
         "Match the reference photo's realism: exposure, contrast, white balance, sharpness, and natural texture.\n"
         "Lighting must be ambient, dim, soft, low-key practical lighting; keep highlights controlled.\n"
-        "No text/signage/logos. No watermarks. No UI. No captions.\n"
+        "No text/signage/logos. No watermarks. No UI. No captions. No people.\n"
         "No cinematic grading, no bloom, no haze/fog/volumetric light, no neon, no glossy/CGI look.\n"
         "Do not change camera framing, perspective, or composition.\n\n"
         f"MUSIC VIBE (use as subtle background inspiration, not literal objects):\n"

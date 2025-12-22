@@ -75,9 +75,18 @@ class LibraryQuery:
                 if genre is not None and track.genre != genre:
                     continue
 
-                # Recency Check - skip recently used tracks
-                if track.last_used_at and track.last_used_at > cutoff_date:
-                    logger.debug(f"Skipping track {track.track_id} (used {track.last_used_at})")
+                # Recency Check - skip recently used OR recently created tracks.
+                #
+                # Important: newly generated tracks often have last_used_at=None until reused,
+                # but we still want to avoid reusing them immediately (avoid repetition).
+                most_recent_activity = track.last_used_at or track.created_at
+                if most_recent_activity > cutoff_date:
+                    logger.debug(
+                        "Skipping track %s (recent activity %s, cutoff %s)",
+                        track.track_id,
+                        most_recent_activity,
+                        cutoff_date,
+                    )
                     continue
 
                 candidates.append(track)

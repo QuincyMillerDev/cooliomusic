@@ -462,6 +462,32 @@ class MusicGenerator:
         print(f"  Estimated cost: ${plan.estimated_cost:.2f}")
         print(f"  Output: {session_dir}\n")
 
+        # Persist session metadata early so aborted sessions can be repaired locally
+        # (and so downstream steps like image/clip can still read session context).
+        session_metadata_path = session_dir / "session.json"
+        seed_metadata = {
+            "session_id": session_id,
+            "concept": plan.concept,
+            "genre": plan.genre,
+            "model_used": plan.model_used,
+            "target_duration_minutes": plan.target_duration_minutes,
+            "total_slots": len(plan.slots),
+            "final_track_count": 0,
+            "reused_count": 0,
+            "generated_count": 0,
+            "uploaded_to_r2": 0,
+            "estimated_cost": plan.estimated_cost,
+            "actual_cost": 0.0,
+            "created_at": datetime.now().isoformat(),
+            "slots": [asdict(s) for s in plan.slots],
+            "track_references": [],
+        }
+        try:
+            with open(session_metadata_path, "w") as f:
+                json.dump(seed_metadata, f, indent=2)
+        except Exception as e:
+            logger.warning("Failed to write seed session.json for %s: %s", session_id, e)
+
         final_tracks: list[GeneratedTrack] = []
         uploaded_metadata: list[TrackMetadata] = []
         reused_count = 0
@@ -499,6 +525,54 @@ class MusicGenerator:
                     raise ValueError(f"Unknown source: {slot.source}")
 
             except Exception as e:
+                # Persist partial session metadata so aborted sessions can be repaired/downloaded.
+                try:
+                    track_references_partial: list[dict[str, Any]] = []
+                    for meta in uploaded_metadata:
+                        track_references_partial.append(
+                            {
+                                "track_id": meta.track_id,
+                                "title": meta.title,
+                                "genre": meta.genre,
+                                "duration_ms": meta.duration_ms,
+                                "provider": meta.provider,
+                            }
+                        )
+
+                    partial_metadata = {
+                        "session_id": session_id,
+                        "concept": plan.concept,
+                        "genre": plan.genre,
+                        "model_used": plan.model_used,
+                        "target_duration_minutes": plan.target_duration_minutes,
+                        "total_slots": len(plan.slots),
+                        "final_track_count": len(final_tracks),
+                        "reused_count": reused_count,
+                        "generated_count": generated_count,
+                        "uploaded_to_r2": len(uploaded_metadata),
+                        "estimated_cost": plan.estimated_cost,
+                        "actual_cost": round(actual_cost, 2),
+                        "created_at": datetime.now().isoformat(),
+                        "aborted": True,
+                        "abort_error": str(e),
+                        "failed_slot": slot.order,
+                        "slots": [asdict(s) for s in plan.slots],
+                        "track_references": track_references_partial,
+                    }
+
+                    with open(session_metadata_path, "w") as f:
+                        json.dump(partial_metadata, f, indent=2)
+
+                    if self._upload_to_r2:
+                        try:
+                            r2 = self._get_r2()
+                            r2.upload_session_metadata(partial_metadata, session_id)
+                            print(f"  Partial session metadata uploaded to R2: sessions/{session_id}/")
+                        except Exception as upload_err:
+                            logger.warning("Failed to upload partial session metadata: %s", upload_err)
+                except Exception as persist_err:
+                    logger.warning("Failed to persist partial session metadata: %s", persist_err)
+
                 # Hard fail: abort the entire session
                 print(f"\n  FATAL: {e}")
                 logger.exception("Session aborted due to track failure")
@@ -539,8 +613,7 @@ class MusicGenerator:
             "track_references": track_references,
         }
 
-        # Save session metadata locally first
-        session_metadata_path = session_dir / "session.json"
+        # Save session metadata locally (overwrite seed file)
         with open(session_metadata_path, "w") as f:
             json.dump(session_metadata, f, indent=2)
 
@@ -581,6 +654,87 @@ class MusicGenerator:
             reused_count=reused_count,
             generated_count=generated_count,
         )
+
+    def repair_local_session(
+        self,
+        session_dir: Path,
+        slot_numbers: list[int],
+    ) -> dict:
+        """Repair a local session directory by regenerating specific slots.
+
+        This is designed for sessions that aborted mid-run (e.g., quota exceeded)
+        where `session.json` exists locally but may not exist in R2.
+        """
+        session_dir = Path(session_dir)
+        session_json_path = session_dir / "session.json"
+        if not session_json_path.exists():
+            raise ValueError(
+                f"Missing session.json in {session_dir}. "
+                "This session can't be repaired without the original slot prompts."
+            )
+
+        session_meta = json.loads(session_json_path.read_text())
+        genre = str(session_meta.get("genre", "electronic"))
+        slots_data = session_meta.get("slots", []) or []
+        if not isinstance(slots_data, list) or not slots_data:
+            raise ValueError(f"Session has no slots data: {session_json_path}")
+
+        slots_to_repair: list[TrackSlot] = []
+        for slot_data in slots_data:
+            if not isinstance(slot_data, dict):
+                continue
+            order = int(slot_data.get("order", 0) or 0)
+            if order not in slot_numbers:
+                continue
+
+            # Skip if audio already exists.
+            expected_mp3 = session_dir / f"track_{order:02d}.mp3"
+            if expected_mp3.exists():
+                continue
+
+            slots_to_repair.append(
+                TrackSlot(
+                    order=order,
+                    source="generate",
+                    duration_ms=int(slot_data.get("duration_ms", 180000) or 180000),
+                    prompt=slot_data.get("prompt"),
+                    provider=self._provider_override or slot_data.get("provider", "elevenlabs"),
+                    title=slot_data.get("title"),
+                )
+            )
+
+        if not slots_to_repair:
+            raise ValueError("No missing tracks found for the requested slots.")
+
+        results = {
+            "session_dir": str(session_dir),
+            "slots_requested": slot_numbers,
+            "succeeded": [],
+            "failed": [],
+            "new_tracks": [],
+            "cost": 0.0,
+        }
+
+        for slot in slots_to_repair:
+            print(f"\nSlot {slot.order}: Regenerating '{slot.title}' via {slot.provider}...")
+            try:
+                track = self._generate_track(slot, session_dir)
+                print(f"  Generated: {track.audio_path.name}")
+
+                meta = self._upload_track_to_r2(track, slot, session_dir.name, genre)
+                if meta:
+                    results["new_tracks"].append(
+                        {"order": slot.order, "title": meta.title, "provider": meta.provider, "track_id": meta.track_id}
+                    )
+                results["succeeded"].append(slot.order)
+                results["cost"] += slot.estimated_cost()
+            except Exception as e:
+                print(f"  FAILED: {e}")
+                logger.exception("Failed to repair local slot %s", slot.order)
+                results["failed"].append({"order": slot.order, "error": str(e)})
+
+        results["cost"] = round(float(results["cost"]), 2)
+        return results
 
     def repair_session(
         self,

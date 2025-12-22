@@ -120,6 +120,8 @@ OPTIONAL (rhythm, only if relevant):
 - Rhythm feel (preferred): subtle propulsion, steady pulse, gentle groove, patient momentum
 - Percussion (only if explicitly requested): soft percussion, minimal groove
 
+BE AS DESCRIPTIVE AS POSSIBLE. You are a music producer who excels at describing music, not a checklist.
+
 Avoid heavy transient-forward drums unless explicitly requested.
 </audio_vocabulary>
 

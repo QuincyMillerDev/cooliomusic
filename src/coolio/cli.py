@@ -337,6 +337,78 @@ def generate(
 
 
 @app.command()
+def repair(
+    session_dir: str = typer.Argument(
+        ...,
+        help="Path to a local session directory containing session.json (e.g. output/audio/session_20251216_154327)",
+    ),
+    slots: list[int] = typer.Argument(
+        ...,
+        help="Slot numbers to regenerate (1-indexed). Example: coolio repair <session_dir> 14 15 16",
+    ),
+    provider: str = typer.Option(
+        "stable_audio",
+        "--provider",
+        "-p",
+        help="Audio provider to use for repair: stable_audio (default) or elevenlabs",
+    ),
+    skip_upload: bool = typer.Option(
+        False,
+        "--skip-upload",
+        help="Don't upload regenerated tracks to R2 library",
+    ),
+):
+    """Repair a partially-generated local session by regenerating missing slots.
+
+    Useful when a session aborts mid-run (e.g., ElevenLabs quota exceeded). This uses
+    the stored prompts in session.json to regenerate only the requested slot numbers.
+    """
+    from pathlib import Path
+    from coolio.generator import MusicGenerator
+
+    valid_providers = ["elevenlabs", "stable_audio"]
+    if provider not in valid_providers:
+        console.print(f"[red]Invalid provider '{provider}'. Choose from: {', '.join(valid_providers)}[/red]")
+        raise typer.Exit(1)
+
+    session_path = Path(session_dir)
+    if not session_path.exists():
+        console.print(f"[red]Session directory not found: {session_path}[/red]")
+        raise typer.Exit(1)
+
+    console.print(Panel(
+        f"[bold]Session:[/bold] {session_path}\n"
+        f"[bold]Slots:[/bold] {', '.join(str(s) for s in slots)}\n"
+        f"[bold]Provider:[/bold] {provider}\n"
+        f"[bold]Upload to R2:[/bold] {not skip_upload}",
+        title="Repair Session",
+    ))
+    console.print()
+
+    generator = MusicGenerator(
+        upload_to_r2=not skip_upload,
+        auto_cleanup=False,
+        provider_override=provider,
+    )
+
+    try:
+        results = generator.repair_local_session(session_path, slots)
+    except Exception as e:
+        console.print(f"[red]Repair failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print()
+    console.print(Panel(
+        f"[green]Repair complete![/green]\n\n"
+        f"Succeeded: {len(results.get('succeeded', []))}\n"
+        f"Failed: {len(results.get('failed', []))}\n"
+        f"Cost: ${results.get('cost', 0.0):.2f}\n"
+        f"Session: {session_path}",
+        title="Complete",
+    ))
+
+
+@app.command()
 def plan(
     concept: str = typer.Argument(
         ...,
